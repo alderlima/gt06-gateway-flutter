@@ -15,7 +15,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.example.gt06_gateway"
-    compileSdk = 34
+    compileSdk = flutter.compileSdkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -28,17 +28,17 @@ android {
 
     defaultConfig {
         applicationId = "com.example.gt06_gateway"
-        minSdk = 21
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String? ?: "upload"
-            keyPassword = keystoreProperties["keyPassword"] as String? ?: "android"
-            storePassword = keystoreProperties["storePassword"] as String? ?: "android"
+            keyAlias = keystoreProperties["keyAlias"] as String? ?: System.getenv("SIGNING_KEY_ALIAS")
+            keyPassword = keystoreProperties["keyPassword"] as String? ?: System.getenv("SIGNING_KEY_PASSWORD")
+            storePassword = keystoreProperties["storePassword"] as String? ?: System.getenv("SIGNING_STORE_PASSWORD")
             val storeFilePath = keystoreProperties["storeFile"] as String? ?: "upload-keystore.jks"
             storeFile = file(storeFilePath)
         }
@@ -51,6 +51,14 @@ android {
             isShrinkResources = false
         }
     }
+
+    lint {
+        disable.add("NullSafeMutableLiveData")
+    }
+}
+
+dependencies {
+    // Sem dependências adicionais
 }
 
 flutter {
