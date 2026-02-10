@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'services/gt06_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await GT06Service.initializeService();
   runApp(const MyApp());
 }
 
@@ -15,19 +18,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'GT06 Gateway PRO',
+      title: 'GT06 Tracker PRO',
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.cyan,
-          brightness: Brightness.dark,
-        ),
-        cardTheme: CardThemeData(
-          color: Colors.grey[900],
-          elevation: 4,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.cyan, brightness: Brightness.dark),
       ),
       home: const ConfigPage(),
     );
@@ -46,26 +41,48 @@ class _ConfigPageState extends State<ConfigPage> {
   final traccarPort = TextEditingController();
   final imei = TextEditingController();
 
-  GT06Service? service;
-  bool traccarConnected = false;
+  final GT06Service service = GT06Service();
+  bool isServiceRunning = false;
   bool usbConnected = false;
-  bool loading = true;
   List<String> logs = [];
-  Position? currentPosition;
+  double? lat, lon;
 
   @override
   void initState() {
     super.initState();
     _loadConfig();
+    _listenToService();
+  }
+
+  void _listenToService() {
+    FlutterBackgroundService().on('update').listen((event) {
+      if (mounted) {
+        setState(() {
+          lat = event?['latitude'];
+          lon = event?['longitude'];
+          isServiceRunning = true;
+        });
+      }
+    });
+
+    FlutterBackgroundService().on('log').listen((event) {
+      if (mounted) _addLog(event?['message'] ?? "");
+    });
+
+    Timer.periodic(const Duration(seconds: 2), (timer) async {
+      final running = await FlutterBackgroundService().isRunning();
+      if (mounted && isServiceRunning != running) {
+        setState(() => isServiceRunning = running);
+      }
+    });
   }
 
   void _addLog(String msg) {
-    if (!mounted) return;
+    if (msg.isEmpty) return;
     setState(() {
-      final now = DateTime.now();
-      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-      logs.insert(0, "[$timeStr] $msg");
-      if (logs.length > 100) logs.removeLast();
+      final time = DateTime.now().toString().split(' ')[1].split('.')[0];
+      logs.insert(0, "[$time] $msg");
+      if (logs.length > 50) logs.removeLast();
     });
   }
 
@@ -75,286 +92,163 @@ class _ConfigPageState extends State<ConfigPage> {
     traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
     imei.text = p.getString('imei') ?? '357152040915004';
     
-    _initService();
-    setState(() => loading = false);
+    service.onUsbStatusChanged = (status) => setState(() => usbConnected = status);
+    service.onLog = (msg) => _addLog(msg);
   }
 
-  void _initService() {
-    service?.dispose();
-    service = GT06Service(
-      traccarHost: traccarHost.text.trim(),
-      traccarPort: int.tryParse(traccarPort.text) ?? 5023,
-      imei: imei.text.trim(),
-      onTraccarStatusChanged: (status) => setState(() => traccarConnected = status),
-      onUsbStatusChanged: (status) => setState(() => usbConnected = status),
-      onLog: (msg) => _addLog(msg),
-      onLocationChanged: (pos) => setState(() => currentPosition = pos),
-    );
+  Future<void> _saveConfig() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString('traccarHost', traccarHost.text.trim());
+    await p.setInt('traccarPort', int.tryParse(traccarPort.text) ?? 5023);
+    await p.setString('imei', imei.text.trim());
   }
 
-  Future<void> _toggleTraccar() async {
-    if (traccarConnected) {
-      service?.dispose();
-      _initService();
+  Future<void> _toggleService() async {
+    if (isServiceRunning) {
+      await service.stopTracking();
     } else {
-      try {
-        final p = await SharedPreferences.getInstance();
-        await p.setString('traccarHost', traccarHost.text.trim());
-        await p.setInt('traccarPort', int.tryParse(traccarPort.text) ?? 5023);
-        await p.setString('imei', imei.text.trim());
-        
-        _initService();
-        await service!.connectTraccar();
-      } catch (e) {
-        _addLog("Erro Traccar: $e");
+      // Verificar permissões antes de iniciar
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
       }
-    }
-  }
-
-  Future<void> _toggleUsb() async {
-    if (usbConnected) {
-      service?.disconnectUsb();
-    } else {
-      bool success = await service!.connectUsb();
-      if (!success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Falha ao conectar USB. Verifique o cabo OTG.")),
-        );
+      
+      if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+        await _saveConfig();
+        await service.startTracking();
+      } else {
+        _addLog("Permissão de localização necessária");
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('GT06 TRACKER PRO', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-      ),
+      appBar: AppBar(title: const Text('GT06 TRACKER PRO V2'), centerTitle: true),
       body: Column(
         children: [
           Expanded(
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                // Status Section
                 Row(
                   children: [
-                    Expanded(child: _statusTile("SERVIDOR", traccarConnected, Icons.cloud_sync)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _statusTile("ARDUINO USB", usbConnected, Icons.usb)),
-                    const SizedBox(width: 12),
-                    Expanded(child: _statusTile("GPS", currentPosition != null, Icons.gps_fixed)),
+                    _statusBox("TRACKER", isServiceRunning, Icons.location_on),
+                    const SizedBox(width: 10),
+                    _statusBox("USB", usbConnected, Icons.usb),
                   ],
                 ),
                 const SizedBox(height: 20),
-
-                // GPS Data Card
-                if (currentPosition != null)
+                if (lat != null)
                   Card(
-                    color: Colors.cyan.withOpacity(0.05),
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
-                            children: [
-                              _gpsInfo("LATITUDE", currentPosition!.latitude.toStringAsFixed(6)),
-                              _gpsInfo("LONGITUDE", currentPosition!.longitude.toStringAsFixed(6)),
-                            ],
-                          ),
-                          const Divider(height: 24, color: Colors.cyan),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
-                            children: [
-                              _gpsInfo("VELOCIDADE", "${(currentPosition!.speed * 3.6).toStringAsFixed(1)} km/h"),
-                              _gpsInfo("SÉRIE", service?.serial.toString() ?? "0"),
-                            ],
-                          ),
-                        ],
-                      ),
+                      child: Text("Lat: $lat | Lon: $lon", style: const TextStyle(fontFamily: 'monospace')),
                     ),
                   ),
-                const SizedBox(height: 12),
-
-                // Config Card
+                const SizedBox(height: 10),
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("CONFIGURAÇÃO", style: TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 12),
-                        _inputField("Host Traccar", traccarHost),
-                        _inputField("Porta", traccarPort, isNumber: true),
-                        _inputField("IMEI Dispositivo", imei, isNumber: true),
+                        _textField("Host", traccarHost),
+                        _textField("Porta", traccarPort, isNum: true),
+                        _textField("IMEI", imei, isNum: true),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 20),
-
-                // Control Buttons
                 Row(
                   children: [
                     Expanded(
-                      child: _actionButton(
-                        traccarConnected ? "PARAR TRACKER" : "INICIAR TRACKER",
-                        traccarConnected ? Colors.redAccent : Colors.cyan,
-                        _toggleTraccar,
-                        traccarConnected ? Icons.stop : Icons.play_arrow,
+                      child: ElevatedButton.icon(
+                        onPressed: _toggleService,
+                        icon: Icon(isServiceRunning ? Icons.stop : Icons.play_arrow),
+                        label: Text(isServiceRunning ? "PARAR" : "INICIAR"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isServiceRunning ? Colors.red.withOpacity(0.2) : Colors.cyan.withOpacity(0.2),
+                          foregroundColor: isServiceRunning ? Colors.red : Colors.cyan,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: _actionButton(
-                        usbConnected ? "DESCONECTAR USB" : "CONECTAR USB",
-                        usbConnected ? Colors.orangeAccent : Colors.greenAccent,
-                        _toggleUsb,
-                        Icons.usb,
+                      child: ElevatedButton.icon(
+                        onPressed: () => usbConnected ? service.disconnectUsb() : service.connectUsb(),
+                        icon: const Icon(Icons.usb),
+                        label: Text(usbConnected ? "DESCONECTAR" : "CONECTAR"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: usbConnected ? Colors.orange.withOpacity(0.2) : Colors.green.withOpacity(0.2),
+                          foregroundColor: usbConnected ? Colors.orange : Colors.green,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                
                 if (usbConnected) ...[
-                  const SizedBox(height: 24),
-                  const Text("TESTES DE COMANDO (USB 9600)", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 12)),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 20),
                   Row(
                     children: [
-                      Expanded(
-                        child: _testButton("BLOQUEAR", Colors.red, () => service?.sendToArduino("ENGINE_STOP")),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _testButton("LIBERAR", Colors.green, () => service?.sendToArduino("ENGINE_RESUME")),
-                      ),
+                      Expanded(child: _testBtn("BLOQUEAR", Colors.red, "ENGINE_STOP")),
+                      const SizedBox(width: 10),
+                      Expanded(child: _testBtn("LIBERAR", Colors.green, "ENGINE_RESUME")),
                     ],
                   ),
-                ],
+                ]
               ],
             ),
           ),
-
-          // Terminal Log
           Container(
-            height: 180,
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              border: Border(top: BorderSide(color: Colors.cyan.withOpacity(0.3), width: 2)),
+            height: 150,
+            color: Colors.grey[900],
+            child: ListView.builder(
+              padding: const EdgeInsets.all(8),
+              itemCount: logs.length,
+              itemBuilder: (c, i) => Text(logs[i], style: const TextStyle(color: Colors.greenAccent, fontSize: 10, fontFamily: 'monospace')),
             ),
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  color: Colors.black,
-                  child: const Row(
-                    children: [
-                      Icon(Icons.terminal, color: Colors.cyan, size: 16),
-                      SizedBox(width: 8),
-                      Text("CONSOLE LOGS", style: TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(8),
-                    itemCount: logs.length,
-                    itemBuilder: (context, index) => Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        logs[index],
-                        style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          )
         ],
       ),
     );
   }
 
-  Widget _gpsInfo(String label, String value) {
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
-      ],
-    );
-  }
-
-  Widget _statusTile(String label, bool active, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: active ? Colors.cyan : Colors.grey[800]!),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: active ? Colors.cyan : Colors.grey[600], size: 18),
-          const SizedBox(height: 4),
-          Text(label, style: TextStyle(fontSize: 9, color: active ? Colors.cyan : Colors.grey[600])),
-          Text(active ? "ON" : "OFF", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
-        ],
-      ),
-    );
-  }
-
-  Widget _inputField(String label, TextEditingController controller, {bool isNumber = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: controller,
-        keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-          isDense: true,
-          enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey[800]!)),
-          focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.cyan)),
+  Widget _statusBox(String title, bool on, IconData icon) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          border: Border.all(color: on ? Colors.cyan : Colors.grey),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: on ? Colors.cyan : Colors.grey),
+            Text(title, style: const TextStyle(fontSize: 10)),
+            Text(on ? "ON" : "OFF", style: TextStyle(fontWeight: FontWeight.bold, color: on ? Colors.green : Colors.red)),
+          ],
         ),
       ),
     );
   }
 
-  Widget _actionButton(String label, Color color, VoidCallback onPressed, IconData icon) {
-    return ElevatedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color.withOpacity(0.15),
-        foregroundColor: color,
-        side: BorderSide(color: color.withOpacity(0.5)),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
+  Widget _textField(String label, TextEditingController controller, {bool isNum = false}) {
+    return TextField(
+      controller: controller,
+      keyboardType: isNum ? TextInputType.number : TextInputType.text,
+      decoration: InputDecoration(labelText: label, isDense: true),
     );
   }
 
-  Widget _testButton(String label, Color color, VoidCallback onPressed) {
+  Widget _testBtn(String label, Color color, String cmd) {
     return OutlinedButton(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        foregroundColor: color,
-        side: BorderSide(color: color.withOpacity(0.5)),
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-      child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+      onPressed: () => service.sendToArduino(cmd),
+      style: OutlinedButton.styleFrom(foregroundColor: color, side: BorderSide(color: color)),
+      child: Text(label),
     );
   }
 }
