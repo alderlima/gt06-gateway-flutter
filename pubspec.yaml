@@ -1,7 +1,6 @@
 name: gt06_gateway
 description: "GT06 Gateway Flutter App"
 publish_to: 'none'
-
 version: 1.0.0+1
 
 environment:
@@ -10,22 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  # para funcionar background
   flutter_background_service: ^5.0.5
   permission_handler: ^11.3.1
-  minimize_app: ^1.0.3
-
-  # GPS e Localização
+  move_to_background: ^2.0.0
   geolocator: ^13.0.2
-  
-  # USB Serial para Arduino
   usb_serial: ^0.5.2
-  
-  # Estado e UI
   provider: ^6.1.2
-  
-  # Utilidades
   shared_preferences: ^2.3.2
   cupertino_icons: ^1.0.8
 
