@@ -10,7 +10,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
+  # para funcionar background
+  flutter_background_service: ^5.0.5
+  permission_handler: ^11.3.1
+  move_to_background: ^1.0.2
+
   # GPS e Localização
   geolocator: ^13.0.2
   

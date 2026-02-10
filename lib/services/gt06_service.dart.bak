@@ -185,77 +185,61 @@ class GT06Service {
     _gpsSubscription = null;
   }
 
-void _sendLocationPacket(Position pos) {
-  if (!_isTraccarConnected) return;
+  void _sendLocationPacket(Position pos) {
+    if (!_isTraccarConnected) return;
 
-  final payload = BytesBuilder();
-  final now = DateTime.now().toUtc();
+    final payload = BytesBuilder();
+    final now = DateTime.now().toUtc();
 
-  // 1. Date Time (6 bytes: YY MM DD HH MM SS)
-  payload.addByte(now.year % 100);
-  payload.addByte(now.month);
-  payload.addByte(now.day);
-  payload.addByte(now.hour);
-  payload.addByte(now.minute);
-  payload.addByte(now.second);
+    // 1. Date Time (6 bytes: YY MM DD HH MM SS)
+    payload.addByte(now.year % 100);
+    payload.addByte(now.month);
+    payload.addByte(now.day);
+    payload.addByte(now.hour);
+    payload.addByte(now.minute);
+    payload.addByte(now.second);
 
-  // 2. Satellites (1 byte)
-  // Bits 7-4: Satellites, Bits 3-0: GPS info length (0xC = 12 bytes)
-  payload.addByte(0xCC); 
+    // 2. Quantity of GPS info (1 byte)
+    // Bits 7-4: Satellites, Bits 3-0: GPS length (always 12 for 0x22)
+    payload.addByte(0xCC); // Exemplo: 12 satélites
 
-  // 3. Latitude (4 bytes) - Valor absoluto em (graus * 60 * 30000)
-  int lat = (pos.latitude * 1800000).abs().toInt();
-  payload.addByte((lat >> 24) & 0xFF);
-  payload.addByte((lat >> 16) & 0xFF);
-  payload.addByte((lat >> 8) & 0xFF);
-  payload.addByte(lat & 0xFF);
+    // 3. Latitude (4 bytes)
+    int lat = (pos.latitude * 60 * 30000).abs().toInt();
+    payload.addByte((lat >> 24) & 0xFF);
+    payload.addByte((lat >> 16) & 0xFF);
+    payload.addByte((lat >> 8) & 0xFF);
+    payload.addByte(lat & 0xFF);
 
-  // 4. Longitude (4 bytes) - Valor absoluto em (graus * 60 * 30000)
-  int lon = (pos.longitude * 1800000).abs().toInt();
-  payload.addByte((lon >> 24) & 0xFF);
-  payload.addByte((lon >> 16) & 0xFF);
-  payload.addByte((lon >> 8) & 0xFF);
-  payload.addByte(lon & 0xFF);
+    // 4. Longitude (4 bytes)
+    int lon = (pos.longitude * 60 * 30000).abs().toInt();
+    payload.addByte((lon >> 24) & 0xFF);
+    payload.addByte((lon >> 16) & 0xFF);
+    payload.addByte((lon >> 8) & 0xFF);
+    payload.addByte(lon & 0xFF);
 
-  // 5. Speed (1 byte)
-  payload.addByte((pos.speed * 3.6).toInt());
+    // 5. Speed (1 byte)
+    payload.addByte((pos.speed * 3.6).toInt()); // km/h
 
-  // 6. Course & Status (2 bytes)
-  /* 
-     Estrutura dos 16 bits:
-     Bit 15: 0 = GPS Offline, 1 = GPS Online (Real-time)
-     Bit 14: 0 = GPS Diferencial, 1 = GPS Normal
-     Bit 13: 0 = Oeste (W), 1 = Leste (E) -> Longitude
-     Bit 12: 0 = Sul (S), 1 = Norte (N)    -> Latitude
-     Bits 11-10: Reservado
-     Bits 9-0: Course (0-1023)
-  */
-  
-  int course = pos.heading.toInt() & 0x3FF; // Máximo 1023
-  int status = 0xC000; // Bit 15 e 14 ativos (GPS Online e Normal)
+    // 6. Course & Status (2 bytes)
+    // Bits 15-13: Status, Bits 12-10: Lat/Lon hemisphere, Bits 9-0: Course
+    int status = 0x4000; // GPS real-time
+    if (pos.latitude < 0) status |= 0x0400; // S
+    if (pos.longitude > 0) status |= 0x0800; // E
+    int course = pos.heading.toInt() & 0x3FF;
+    int courseStatus = status | course;
+    payload.addByte((courseStatus >> 8) & 0xFF);
+    payload.addByte(courseStatus & 0xFF);
 
-  // CORREÇÃO DOS HEMISFÉRIOS:
-  if (pos.latitude >= 0) status |= 0x1000;  // Bit 12 (1 = Norte)
-  if (pos.longitude >= 0) status |= 0x2000; // Bit 13 (1 = Leste)
-  
-  int courseStatus = status | course;
-  
-  payload.addByte((courseStatus >> 8) & 0xFF);
-  payload.addByte(courseStatus & 0xFF);
+    // 7. MCC, MNC, LAC, Cell ID (9 bytes - Dummy para este exemplo)
+    payload.add([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-  // 7. LBS Data (MCC, MNC, LAC, Cell ID) - 8 bytes + 1 dummy
-  payload.add(Uint8List(9)); 
+    // 8. ACC, Data Upload Mode, GPS Real-time (3 bytes)
+    payload.add([0x01, 0x01, 0x01]);
 
-  // 8. ACC (1b), Data Upload Mode (1b), GPS Real-time (1b)
-  payload.addByte(0x01); // ACC ON
-  payload.addByte(0x01); // Upload mode
-  payload.addByte(0x01); // Real-time
-
-  final packet = _buildPacket(0x22, payload.toBytes());
-  _traccarSocket?.add(packet);
-  _log("Enviado: LAT ${pos.latitude}, LON ${pos.longitude}, CURSO ${pos.heading}");
-}
-
+    final packet = _buildPacket(0x22, payload.toBytes());
+    _traccarSocket?.add(packet);
+    _log("Localização enviada: ${pos.latitude}, ${pos.longitude}");
+  }
 
   /* ================= USB SERIAL CONNECTION ================= */
   Future<bool> connectUsb() async {
