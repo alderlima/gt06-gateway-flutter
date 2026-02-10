@@ -63,21 +63,29 @@ class _ConfigPageState extends State<ConfigPage> {
     await p.setString('imei', imei.text);
   }
 
-  Future<void> _connect() async {
+Future<void> _connect() async {
+  try {
     await _save();
 
     service = GT06Service(
-      traccarHost: traccarHost.text,
+      traccarHost: traccarHost.text.trim(),
       traccarPort: int.parse(traccarPort.text),
-      arduinoHost: arduinoHost.text,
+      arduinoHost: arduinoHost.text.trim(),
       arduinoPort: int.parse(arduinoPort.text),
-      imei: imei.text,
+      imei: imei.text.trim(),
     );
 
     await service!.connect();
 
     setState(() => connected = true);
+  } catch (e) {
+    debugPrint("ERRO AO CONECTAR: $e");
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Erro: $e")),
+    );
   }
+}
 
   void _disconnect() {
     service?.dispose();

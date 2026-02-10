@@ -7,12 +7,12 @@ class GT06Service {
   int _serial = 1;
   Timer? _heartbeatTimer;
 
-  String traccarHost;
-  int traccarPort;
-  String arduinoHost;
-  int arduinoPort;
-  String imei;
-  int heartbeatInterval;
+  final String traccarHost;
+  final int traccarPort;
+  final String arduinoHost;
+  final int arduinoPort;
+  final String imei;
+  final int heartbeatInterval;
 
   GT06Service({
     required this.traccarHost,
@@ -23,10 +23,10 @@ class GT06Service {
     this.heartbeatInterval = 10,
   });
 
-  // ================= CRC16 X25 =================
-  int crc16X25(Uint8List data) {
+  /* ================= CRC16 X25 ================= */
+  int _crc16X25(Uint8List data) {
     int crc = 0xFFFF;
-    for (var b in data) {
+    for (final b in data) {
       crc ^= b;
       for (int i = 0; i < 8; i++) {
         if ((crc & 1) != 0) {
@@ -39,79 +39,106 @@ class GT06Service {
     return (~crc) & 0xFFFF;
   }
 
-  // ================= PACKET =================
-  Uint8List buildPacket(int protocol, Uint8List payload) {
-    int length = payload.length + 5;
+  /* ================= IMEI → BCD ================= */
+  Uint8List _imeiToBcd(String imei) {
+    if (imei.length % 2 != 0) {
+      imei = "0$imei";
+    }
+
+    final bytes = Uint8List(imei.length ~/ 2);
+    for (int i = 0; i < imei.length; i += 2) {
+      bytes[i ~/ 2] =
+          ((imei.codeUnitAt(i) - 48) << 4) |
+          (imei.codeUnitAt(i + 1) - 48);
+    }
+    return bytes;
+  }
+
+  /* ================= PACKET BUILDER ================= */
+  Uint8List _buildPacket(int protocol, Uint8List payload) {
+    final length = payload.length + 5;
 
     final body = BytesBuilder();
     body.add([length]);
     body.add([protocol]);
     body.add(payload);
-    body.addByte((_serial >> 8) & 0xFF);
-    body.addByte(_serial & 0xFF);
+    body.add([( _serial >> 8 ) & 0xFF, _serial & 0xFF]);
 
-    final crc = crc16X25(body.toBytes());
+    final crc = _crc16X25(body.toBytes());
 
     final packet = BytesBuilder();
     packet.add([0x78, 0x78]);
     packet.add(body.toBytes());
-    packet.addByte((crc >> 8) & 0xFF);
-    packet.addByte(crc & 0xFF);
+    packet.add([(crc >> 8) & 0xFF, crc & 0xFF]);
     packet.add([0x0D, 0x0A]);
 
     _serial++;
     return packet.toBytes();
   }
 
-  // ================= CONNECT =================
+  /* ================= CONNECT ================= */
   Future<void> connect() async {
-    _socket = await Socket.connect(traccarHost, traccarPort);
-    _socket!.listen(_onData);
-    sendLogin();
-    _startHeartbeat();
-    print("[GT06] Conectado ao Traccar");
-  }
-
-  // ================= LOGIN =================
-  void sendLogin() {
-    final imeiBytes = Uint8List.fromList(
-      List<int>.generate(imei.length ~/ 2, (i) {
-        return int.parse(imei.substring(i * 2, i * 2 + 2));
-      }),
+    _socket = await Socket.connect(
+      traccarHost,
+      traccarPort,
+      timeout: const Duration(seconds: 10),
     );
-    _socket!.add(buildPacket(0x01, imeiBytes));
-    print("[GT06] Login enviado");
+
+    _socket!.listen(
+      _onData,
+      onDone: _onDisconnected,
+      onError: _onError,
+      cancelOnError: true,
+    );
+
+    _sendLogin();
+    _startHeartbeat();
   }
 
-  // ================= HEARTBEAT =================
+  /* ================= LOGIN ================= */
+  void _sendLogin() {
+    final imeiBytes = _imeiToBcd(imei);
+    final packet = _buildPacket(0x01, imeiBytes);
+    _socket!.add(packet);
+  }
+
+  /* ================= HEARTBEAT ================= */
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer =
-        Timer.periodic(Duration(seconds: heartbeatInterval), (_) {
-      final payload = Uint8List.fromList([0x00, 0x00, 0x00]);
-      _socket!.add(buildPacket(0x13, payload));
-      print("[GT06] Heartbeat");
-    });
+    _heartbeatTimer = Timer.periodic(
+      Duration(seconds: heartbeatInterval),
+      (_) {
+        if (_socket != null) {
+          final payload = Uint8List.fromList([0x00, 0x00, 0x00]);
+          _socket!.add(_buildPacket(0x13, payload));
+        }
+      },
+    );
   }
 
-  // ================= RECEIVE =================
+  /* ================= RECEIVE ================= */
   void _onData(Uint8List data) {
-    if (data.length < 5) return;
+    if (data.length < 6) return;
     if (data[0] != 0x78 || data[1] != 0x78) return;
 
     final protocol = data[3];
-    final payloadLen = data[2] - 5;
-    final payload = data.sublist(4, 4 + payloadLen);
-    final serial = (data[4 + payloadLen] << 8) | data[5 + payloadLen];
+    final payloadLength = data[2] - 5;
+
+    if (payloadLength < 0) return;
+
+    final payload = data.sublist(4, 4 + payloadLength);
+    final serial = (data[4 + payloadLength] << 8) |
+        data[5 + payloadLength];
 
     if (protocol == 0x80) {
       _handleCommand(payload, serial);
     }
   }
 
-  // ================= COMMAND =================
-  void _handleCommand(Uint8List payload, int serial) async {
-    final text = String.fromCharCodes(payload.where((b) => b != 0));
+  /* ================= COMMAND ================= */
+  Future<void> _handleCommand(Uint8List payload, int serial) async {
+    final clean = payload.where((b) => b != 0).toList();
+    final text = String.fromCharCodes(clean);
 
     if (text.contains("Relay,1")) {
       await _sendToArduino("ENGINE_STOP");
@@ -119,26 +146,40 @@ class GT06Service {
       await _sendToArduino("ENGINE_RESUME");
     }
 
-    // ACK
-    _socket!.add(buildPacket(0x80, Uint8List(0)));
-    print("[GT06] ACK enviado");
+    // ACK obrigatório
+    _socket?.add(_buildPacket(0x80, Uint8List(0)));
   }
 
-  // ================= ARDUINO =================
+  /* ================= ARDUINO ================= */
   Future<void> _sendToArduino(String cmd) async {
     try {
-      final s = await Socket.connect(arduinoHost, arduinoPort);
+      final s = await Socket.connect(
+        arduinoHost,
+        arduinoPort,
+        timeout: const Duration(seconds: 5),
+      );
       s.write("$cmd\n");
       await s.flush();
       await s.close();
-      print("[ARDUINO] $cmd");
-    } catch (e) {
-      print("[ARDUINO ERROR] $e");
+    } catch (_) {
+      // nunca crasha o app
     }
   }
 
+  /* ================= ERROR / DISCONNECT ================= */
+  void _onError(error) {
+    dispose();
+  }
+
+  void _onDisconnected() {
+    dispose();
+  }
+
+  /* ================= CLEANUP ================= */
   void dispose() {
     _heartbeatTimer?.cancel();
-    _socket?.close();
+    _heartbeatTimer = null;
+    _socket?.destroy();
+    _socket = null;
   }
 }
