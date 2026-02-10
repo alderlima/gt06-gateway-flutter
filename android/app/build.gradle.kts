@@ -14,7 +14,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "org.traccar.client"
+    namespace = "com.example.gt06_gateway"
     compileSdk = flutter.compileSdkVersion
 
     compileOptions {
@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "org.traccar.client"
+        applicationId = "com.example.gt06_gateway"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
