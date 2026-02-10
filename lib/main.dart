@@ -6,6 +6,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:move_to_background/move_to_background.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'services/gt06_service.dart';
+import 'package:minimize_app/minimize_app.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -174,7 +176,7 @@ class _ConfigPageState extends State<ConfigPage> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        MoveToBackground.moveTaskToBack();
+        MinimizeApp.minimizeApp(); // Faz a mesma função de forma compatível
       },
       child: Scaffold(
         backgroundColor: Colors.black,
