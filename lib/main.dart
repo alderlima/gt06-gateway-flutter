@@ -1,58 +1,150 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
-import 'services/tracker_provider.dart';
-import 'screens/main_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'services/gt06_service.dart';
 
-void main() {
+Future<void> main() async {
+  // OBRIGATÓRIO EM RELEASE
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Configura orientação portrait
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
-  
-  // Configura cor da barra de status
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-    ),
-  );
-  
-  runApp(const RastreadorApp());
+  runApp(const MyApp());
 }
 
-class RastreadorApp extends StatelessWidget {
-  const RastreadorApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => TrackerProvider(),
-      child: MaterialApp(
-        title: 'Rastreador GT06',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF00BCD4),
-            brightness: Brightness.dark,
-          ),
-          useMaterial3: true,
-          cardTheme: CardThemeData(
-            elevation: 8,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-          ),
-          appBarTheme: const AppBarTheme(
-            centerTitle: true,
-            elevation: 0,
-            backgroundColor: Colors.transparent,
-          ),
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'GT06 Gateway',
+      theme: ThemeData(useMaterial3: true),
+      home: const ConfigPage(),
+    );
+  }
+}
+
+class ConfigPage extends StatefulWidget {
+  const ConfigPage({super.key});
+
+  @override
+  State<ConfigPage> createState() => _ConfigPageState();
+}
+
+class _ConfigPageState extends State<ConfigPage> {
+  final traccarHost = TextEditingController();
+  final traccarPort = TextEditingController();
+  final arduinoHost = TextEditingController();
+  final arduinoPort = TextEditingController();
+  final imei = TextEditingController();
+
+  GT06Service? service;
+  bool connected = false;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadConfig();
+  }
+
+  Future<void> _loadConfig() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+
+      traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
+      traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
+      arduinoHost.text = p.getString('arduinoHost') ?? '192.168.1.4';
+      arduinoPort.text = (p.getInt('arduinoPort') ?? 8080).toString();
+      imei.text = p.getString('imei') ?? '357152040915004';
+    } catch (e) {
+      debugPrint("Erro loadConfig: $e");
+    }
+
+    setState(() => loading = false);
+  }
+
+  Future<void> _saveConfig() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString('traccarHost', traccarHost.text.trim());
+    await p.setInt('traccarPort', int.parse(traccarPort.text));
+    await p.setString('arduinoHost', arduinoHost.text.trim());
+    await p.setInt('arduinoPort', int.parse(arduinoPort.text));
+    await p.setString('imei', imei.text.trim());
+  }
+
+  Future<void> _connect() async {
+    try {
+      await _saveConfig();
+
+      service = GT06Service(
+        traccarHost: traccarHost.text.trim(),
+        traccarPort: int.parse(traccarPort.text),
+        arduinoHost: arduinoHost.text.trim(),
+        arduinoPort: int.parse(arduinoPort.text),
+        imei: imei.text.trim(),
+      );
+
+      await service!.connect();
+
+      setState(() => connected = true);
+    } catch (e) {
+      debugPrint("ERRO AO CONECTAR: $e");
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erro: $e")),
+        );
+      }
+    }
+  }
+
+  void _disconnect() {
+    service?.dispose();
+    setState(() => connected = false);
+  }
+
+  Widget field(String label, TextEditingController c,
+      {TextInputType type = TextInputType.text}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: TextField(
+        controller: c,
+        keyboardType: type,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
         ),
-        home: const MainScreen(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('GT06 Gateway')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ListView(
+          children: [
+            field('Traccar IP', traccarHost),
+            field('Traccar Porta', traccarPort,
+                type: TextInputType.number),
+            field('Arduino IP', arduinoHost),
+            field('Arduino Porta', arduinoPort,
+                type: TextInputType.number),
+            field('IMEI', imei, type: TextInputType.number),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: connected ? _disconnect : _connect,
+              child: Text(connected ? 'Desconectar' : 'Conectar'),
+            ),
+          ],
+        ),
       ),
     );
   }
