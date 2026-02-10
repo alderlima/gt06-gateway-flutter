@@ -4,9 +4,11 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 class GT06Service {
-  Socket? _socket;
+  Socket? _traccarSocket;
+  Socket? _arduinoSocket;
   int _serial = 1;
   Timer? _heartbeatTimer;
+  Timer? _arduinoReconnectTimer;
 
   final String traccarHost;
   final int traccarPort;
@@ -15,6 +17,14 @@ class GT06Service {
   final String imei;
   final int heartbeatInterval;
 
+  // Callbacks para atualizar a UI
+  final Function(bool)? onTraccarStatusChanged;
+  final Function(bool)? onArduinoStatusChanged;
+  final Function(String)? onLog;
+
+  bool _isTraccarConnected = false;
+  bool _isArduinoConnected = false;
+
   GT06Service({
     required this.traccarHost,
     required this.traccarPort,
@@ -22,7 +32,15 @@ class GT06Service {
     required this.arduinoPort,
     required this.imei,
     this.heartbeatInterval = 10,
+    this.onTraccarStatusChanged,
+    this.onArduinoStatusChanged,
+    this.onLog,
   });
+
+  void _log(String msg) {
+    debugPrint(msg);
+    onLog?.call(msg);
+  }
 
   /* ================= CRC16 X25 ================= */
   int _crc16(Uint8List data) {
@@ -42,15 +60,16 @@ class GT06Service {
 
   /* ================= IMEI → BCD ================= */
   Uint8List _imeiToBcd(String imei) {
-    if (imei.length % 2 != 0) {
-      imei = "0$imei";
+    String tempImei = imei;
+    if (tempImei.length % 2 != 0) {
+      tempImei = "0$tempImei";
     }
 
-    final bytes = Uint8List(imei.length ~/ 2);
-    for (int i = 0; i < imei.length; i += 2) {
+    final bytes = Uint8List(tempImei.length ~/ 2);
+    for (int i = 0; i < tempImei.length; i += 2) {
       bytes[i ~/ 2] =
-          ((imei.codeUnitAt(i) - 48) << 4) |
-          (imei.codeUnitAt(i + 1) - 48);
+          ((tempImei.codeUnitAt(i) - 48) << 4) |
+          (tempImei.codeUnitAt(i + 1) - 48);
     }
     return bytes;
   }
@@ -58,7 +77,6 @@ class GT06Service {
   /* ================= PACKET BUILDER ================= */
   Uint8List _buildPacket(int protocol, Uint8List payload) {
     final body = BytesBuilder();
-    // Protocol + Payload + Serial (2 bytes)
     final length = 1 + payload.length + 2;
     body.addByte(length);
     body.addByte(protocol);
@@ -81,28 +99,78 @@ class GT06Service {
     return packet.toBytes();
   }
 
-  /* ================= CONNECT ================= */
+  /* ================= CONNECT ALL ================= */
   Future<void> connect() async {
+    await connectTraccar();
+    await connectArduino();
+  }
+
+  /* ================= TRACCAR CONNECTION ================= */
+  Future<void> connectTraccar() async {
     try {
-      _socket = await Socket.connect(
+      _log("Conectando ao Traccar: $traccarHost:$traccarPort");
+      _traccarSocket = await Socket.connect(
         traccarHost,
         traccarPort,
         timeout: const Duration(seconds: 10),
       );
 
-      _socket!.listen(
-        _onData,
-        onDone: _onDisconnected,
-        onError: _onError,
-        cancelOnError: false, // Não cancelar para permitir reconexão manual ou log
+      _traccarSocket!.listen(
+        _onTraccarData,
+        onDone: () => _onTraccarDisconnected(),
+        onError: (e) => _onTraccarError(e),
+        cancelOnError: false,
       );
 
+      _isTraccarConnected = true;
+      onTraccarStatusChanged?.call(true);
       _sendLogin();
       _startHeartbeat();
+      _log("Conectado ao Traccar com sucesso!");
     } catch (e) {
-      debugPrint("Erro na conexão Socket: $e");
+      _isTraccarConnected = false;
+      onTraccarStatusChanged?.call(false);
+      _log("Erro na conexão Traccar: $e");
       rethrow;
     }
+  }
+
+  /* ================= ARDUINO CONNECTION ================= */
+  Future<void> connectArduino() async {
+    try {
+      _log("Conectando ao Arduino: $arduinoHost:$arduinoPort");
+      _arduinoSocket = await Socket.connect(
+        arduinoHost,
+        arduinoPort,
+        timeout: const Duration(seconds: 10),
+      );
+
+      _arduinoSocket!.listen(
+        (data) => _log("Arduino: ${String.fromCharCodes(data).trim()}"),
+        onDone: () => _onArduinoDisconnected(),
+        onError: (e) => _onArduinoError(e),
+        cancelOnError: false,
+      );
+
+      _isArduinoConnected = true;
+      onArduinoStatusChanged?.call(true);
+      _arduinoReconnectTimer?.cancel();
+      _log("Conectado ao Arduino com sucesso!");
+    } catch (e) {
+      _isArduinoConnected = false;
+      onArduinoStatusChanged?.call(false);
+      _log("Erro na conexão Arduino: $e");
+      _scheduleArduinoReconnect();
+    }
+  }
+
+  void _scheduleArduinoReconnect() {
+    _arduinoReconnectTimer?.cancel();
+    _arduinoReconnectTimer = Timer(const Duration(seconds: 10), () {
+      if (!_isArduinoConnected) {
+        connectArduino();
+      }
+    });
   }
 
   /* ================= LOGIN ================= */
@@ -110,9 +178,9 @@ class GT06Service {
     try {
       final imeiBytes = _imeiToBcd(imei);
       final packet = _buildPacket(0x01, imeiBytes);
-      _socket?.add(packet);
+      _traccarSocket?.add(packet);
     } catch (e) {
-      debugPrint("Erro ao enviar login: $e");
+      _log("Erro ao enviar login: $e");
     }
   }
 
@@ -123,21 +191,19 @@ class GT06Service {
       Duration(seconds: heartbeatInterval),
       (_) {
         try {
-          if (_socket != null) {
+          if (_traccarSocket != null && _isTraccarConnected) {
             final payload = Uint8List.fromList([0x00, 0x00, 0x00]);
-            _socket?.add(_buildPacket(0x13, payload));
+            _traccarSocket?.add(_buildPacket(0x13, payload));
           }
         } catch (e) {
-          debugPrint("Erro no heartbeat: $e");
+          _log("Erro no heartbeat: $e");
         }
       },
     );
   }
 
-  /* ================= RECEIVE ================= */
-  void _onData(Uint8List data) {
-    // Pacote mínimo GT06: 0x78 0x78 [Length] [Protocol] [SerialH] [SerialL] [CRC H] [CRC L] 0x0D 0x0A
-    // Total mínimo: 10 bytes
+  /* ================= RECEIVE TRACCAR ================= */
+  void _onTraccarData(Uint8List data) {
     if (data.length < 10) return;
     
     int index = 0;
@@ -146,22 +212,18 @@ class GT06Service {
         if (index + 2 >= data.length) break;
         
         final length = data[index + 2];
-        final totalPacketLength = length + 5; // 2 start + 1 length + length + 2 stop
+        final totalPacketLength = length + 5; 
         
         if (index + totalPacketLength > data.length) break;
         
         final protocol = data[index + 3];
-        // O payload começa em index + 4 e termina antes do serial (2 bytes) e CRC (2 bytes)
-        // length = 1 (protocol) + payload + 2 (serial)
         final payloadLength = length - 3; 
         
         if (payloadLength >= 0) {
           final payload = data.sublist(index + 4, index + 4 + payloadLength);
           final serial = (data[index + 4 + payloadLength] << 8) | data[index + 5 + payloadLength];
           
-          if (protocol == 0x80 || protocol == 0x01 || protocol == 0x13) {
-            _handleResponse(protocol, payload, serial);
-          }
+          _handleResponse(protocol, payload, serial);
         }
         index += totalPacketLength;
       } else {
@@ -174,16 +236,17 @@ class GT06Service {
     if (protocol == 0x80) {
       _handleCommand(payload, serial);
     } else if (protocol == 0x01) {
-      debugPrint("Login bem sucedido");
+      _log("Traccar: Login aceito");
     } else if (protocol == 0x13) {
-      debugPrint("Heartbeat OK");
+      // Heartbeat ACK
     }
   }
 
-  /* ================= COMMAND ================= */
+  /* ================= COMMAND HANDLING ================= */
   Future<void> _handleCommand(Uint8List payload, int serial) async {
     final clean = payload.where((b) => b != 0).toList();
     final text = String.fromCharCodes(clean);
+    _log("Comando recebido do Traccar: $text");
 
     if (text.contains("Relay,1")) {
       await sendToArduino("ENGINE_STOP");
@@ -191,40 +254,63 @@ class GT06Service {
       await sendToArduino("ENGINE_RESUME");
     }
 
-    // ACK obrigatório
-    _socket?.add(_buildPacket(0x80, Uint8List(0)));
+    // Enviar ACK para o Traccar
+    _traccarSocket?.add(_buildPacket(0x80, Uint8List(0)));
   }
 
-  /* ================= ARDUINO ================= */
+  /* ================= SEND TO ARDUINO ================= */
   Future<void> sendToArduino(String cmd) async {
-    try {
-      final s = await Socket.connect(
-        arduinoHost,
-        arduinoPort,
-        timeout: const Duration(seconds: 5),
-      );
-      s.write("$cmd\n");
-      await s.flush();
-      await s.close();
-    } catch (_) {
-      // nunca crasha o app
+    if (_arduinoSocket != null && _isArduinoConnected) {
+      try {
+        _log("Enviando para Arduino: $cmd");
+        _arduinoSocket!.write("$cmd\n");
+        await _arduinoSocket!.flush();
+      } catch (e) {
+        _log("Erro ao enviar para Arduino: $e");
+        _onArduinoDisconnected();
+      }
+    } else {
+      _log("Arduino desconectado. Tentando reconectar e enviar...");
+      await connectArduino();
+      if (_isArduinoConnected) {
+        sendToArduino(cmd);
+      }
     }
   }
 
-  /* ================= ERROR / DISCONNECT ================= */
-  void _onError(error) {
-    dispose();
+  /* ================= STATUS HANDLERS ================= */
+  void _onTraccarError(error) {
+    _log("Erro no socket Traccar: $error");
+    _onTraccarDisconnected();
   }
 
-  void _onDisconnected() {
-    dispose();
+  void _onTraccarDisconnected() {
+    _isTraccarConnected = false;
+    onTraccarStatusChanged?.call(false);
+    _log("Traccar desconectado");
+  }
+
+  void _onArduinoError(error) {
+    _log("Erro no socket Arduino: $error");
+    _onArduinoDisconnected();
+  }
+
+  void _onArduinoDisconnected() {
+    _isArduinoConnected = false;
+    onArduinoStatusChanged?.call(false);
+    _log("Arduino desconectado");
+    _scheduleArduinoReconnect();
   }
 
   /* ================= CLEANUP ================= */
   void dispose() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
-    _socket?.destroy();
-    _socket = null;
+    _arduinoReconnectTimer?.cancel();
+    _traccarSocket?.destroy();
+    _arduinoSocket?.destroy();
+    _traccarSocket = null;
+    _arduinoSocket = null;
+    _isTraccarConnected = false;
+    _isArduinoConnected = false;
   }
 }

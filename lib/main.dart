@@ -5,7 +5,6 @@ import 'services/gt06_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Capturar erros do Flutter
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     debugPrint("Flutter Error: ${details.exception}");
@@ -22,7 +21,10 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'GT06 Gateway',
-      theme: ThemeData(useMaterial3: true),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+      ),
       home: const ConfigPage(),
     );
   }
@@ -43,8 +45,11 @@ class _ConfigPageState extends State<ConfigPage> {
   final imei = TextEditingController();
 
   GT06Service? service;
-  bool connected = false;
+  bool traccarConnected = false;
+  bool arduinoConnected = false;
   bool loading = true;
+  List<String> logs = [];
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -52,19 +57,27 @@ class _ConfigPageState extends State<ConfigPage> {
     _loadConfig();
   }
 
+  void _addLog(String msg) {
+    if (!mounted) return;
+    setState(() {
+      final now = DateTime.now();
+      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+      logs.insert(0, "[$timeStr] $msg");
+      if (logs.length > 50) logs.removeLast();
+    });
+  }
+
   Future<void> _loadConfig() async {
     try {
       final p = await SharedPreferences.getInstance();
-
       traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
       traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
       arduinoHost.text = p.getString('arduinoHost') ?? '192.168.1.4';
       arduinoPort.text = (p.getInt('arduinoPort') ?? 8080).toString();
       imei.text = p.getString('imei') ?? '357152040915004';
     } catch (e) {
-      debugPrint("Erro loadConfig: $e");
+      _addLog("Erro ao carregar configurações: $e");
     }
-
     setState(() => loading = false);
   }
 
@@ -72,18 +85,14 @@ class _ConfigPageState extends State<ConfigPage> {
     try {
       final p = await SharedPreferences.getInstance();
       await p.setString('traccarHost', traccarHost.text.trim());
-      
       int? tPort = int.tryParse(traccarPort.text);
       if (tPort != null) await p.setInt('traccarPort', tPort);
-      
       await p.setString('arduinoHost', arduinoHost.text.trim());
-      
       int? aPort = int.tryParse(arduinoPort.text);
       if (aPort != null) await p.setInt('arduinoPort', aPort);
-      
       await p.setString('imei', imei.text.trim());
     } catch (e) {
-      debugPrint("Erro ao salvar config: $e");
+      _addLog("Erro ao salvar config: $e");
     }
   }
 
@@ -99,56 +108,48 @@ class _ConfigPageState extends State<ConfigPage> {
     }
 
     setState(() => loading = true);
+    await _saveConfig();
 
     try {
-      await _saveConfig();
-
+      service?.dispose();
       service = GT06Service(
         traccarHost: traccarHost.text.trim(),
         traccarPort: tPort,
         arduinoHost: arduinoHost.text.trim(),
         arduinoPort: aPort,
         imei: imei.text.trim(),
+        onTraccarStatusChanged: (status) => setState(() => traccarConnected = status),
+        onArduinoStatusChanged: (status) => setState(() => arduinoConnected = status),
+        onLog: (msg) => _addLog(msg),
       );
 
       await service!.connect();
-
-      setState(() {
-        connected = true;
-        loading = false;
-      });
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Conectado com sucesso!")),
-        );
-      }
+      setState(() => loading = false);
     } catch (e) {
       setState(() => loading = false);
-      debugPrint("ERRO AO CONECTAR: $e");
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Erro: $e")),
-        );
-      }
+      _addLog("ERRO AO CONECTAR: $e");
     }
   }
 
   void _disconnect() {
     service?.dispose();
-    setState(() => connected = false);
+    setState(() {
+      traccarConnected = false;
+      arduinoConnected = false;
+    });
+    _addLog("Serviços parados pelo usuário");
   }
 
-  Widget field(String label, TextEditingController c,
-      {TextInputType type = TextInputType.text}) {
+  Widget field(String label, TextEditingController c, {TextInputType type = TextInputType.text}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: TextField(
         controller: c,
         keyboardType: type,
+        style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
           labelText: label,
+          isDense: true,
           border: const OutlineInputBorder(),
         ),
       ),
@@ -158,85 +159,156 @@ class _ConfigPageState extends State<ConfigPage> {
   @override
   Widget build(BuildContext context) {
     if (loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    bool anyConnected = traccarConnected || arduinoConnected;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('GT06 Gateway'),
-        actions: [
-          Icon(
-            connected ? Icons.link : Icons.link_off,
-            color: connected ? Colors.green : Colors.red,
-          ),
-          const SizedBox(width: 16),
-        ],
+        title: const Text('GT06 Gateway PRO'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ListView(
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                // Status das Conexões
+                Row(
                   children: [
-                    const Text("Configurações Traccar", 
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                    field('IP Servidor', traccarHost),
-                    field('Porta', traccarPort, type: TextInputType.number),
-                    field('IMEI do Dispositivo', imei, type: TextInputType.number),
+                    Expanded(
+                      child: _statusCard("Traccar", traccarConnected),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _statusCard("Arduino", arduinoConnected),
+                    ),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  children: [
-                    const Text("Configurações Arduino", 
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                    field('IP Arduino', arduinoHost),
-                    field('Porta Arduino', arduinoPort, type: TextInputType.number),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 50,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: connected ? Colors.red.shade100 : Colors.blue.shade100,
-                ),
-                onPressed: connected ? _disconnect : _connect,
-                child: Text(connected ? 'DESCONECTAR' : 'CONECTAR AGORA'),
-              ),
-            ),
-            if (connected) ...[
-              const SizedBox(height: 20),
-              const Divider(),
-              const Text("Comandos Rápidos (Arduino)", 
-                textAlign: TextAlign.center,
-                style: TextStyle(fontWeight: FontWeight.bold)),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  ElevatedButton(
-                    onPressed: () => service?.sendToArduino("ENGINE_STOP"),
-                    child: const Text("Bloquear"),
+                const SizedBox(height: 12),
+                
+                // Configurações
+                Card(
+                  elevation: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text("Configurações", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Divider(),
+                        field('IP Servidor Traccar', traccarHost),
+                        field('Porta Traccar', traccarPort, type: TextInputType.number),
+                        field('IMEI do Dispositivo', imei, type: TextInputType.number),
+                        const SizedBox(height: 8),
+                        field('IP do Arduino', arduinoHost),
+                        field('Porta do Arduino', arduinoPort, type: TextInputType.number),
+                      ],
+                    ),
                   ),
-                  ElevatedButton(
-                    onPressed: () => service?.sendToArduino("ENGINE_RESUME"),
-                    child: const Text("Desbloquear"),
+                ),
+                const SizedBox(height: 12),
+                
+                // Ações
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton.icon(
+                    onPressed: anyConnected ? _disconnect : _connect,
+                    icon: Icon(anyConnected ? Icons.stop : Icons.play_arrow),
+                    label: Text(anyConnected ? 'DESCONECTAR TUDO' : 'INICIAR GATEWAY'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: anyConnected ? Colors.red.shade100 : Colors.green.shade100,
+                      foregroundColor: anyConnected ? Colors.red.shade900 : Colors.green.shade900,
+                    ),
+                  ),
+                ),
+                
+                if (arduinoConnected) ...[
+                  const SizedBox(height: 16),
+                  const Text("Comandos Diretos", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => service?.sendToArduino("ENGINE_STOP"),
+                          icon: const Icon(Icons.block, color: Colors.red),
+                          label: const Text("BLOQUEAR"),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => service?.sendToArduino("ENGINE_RESUME"),
+                          icon: const Icon(Icons.check_circle, color: Colors.green),
+                          label: const Text("LIBERAR"),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
+              ],
+            ),
+          ),
+          
+          // Terminal de Logs
+          Container(
+            height: 180,
+            width: double.infinity,
+            color: Colors.black87,
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("LOGS DO SISTEMA", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12)),
+                    Icon(Icons.terminal, color: Colors.green, size: 14),
+                  ],
+                ),
+                const Divider(color: Colors.green, height: 8),
+                Expanded(
+                  child: ListView.builder(
+                    reverse: false,
+                    itemCount: logs.length,
+                    itemBuilder: (context, index) => Text(
+                      logs[index],
+                      style: const TextStyle(color: Colors.white70, fontSize: 11, fontFamily: 'monospace'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusCard(String title, bool isConnected) {
+    return Card(
+      color: isConnected ? Colors.green.shade50 : Colors.red.shade50,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        child: Row(
+          children: [
+            Icon(
+              isConnected ? Icons.check_circle : Icons.error,
+              color: isConnected ? Colors.green : Colors.red,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              title,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: isConnected ? Colors.green.shade900 : Colors.red.shade900,
               ),
-            ]
+            ),
           ],
         ),
       ),
