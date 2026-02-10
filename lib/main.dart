@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart';
 import 'services/gt06_service.dart';
 
 Future<void> main() async {
@@ -22,7 +23,7 @@ class MyApp extends StatelessWidget {
           seedColor: Colors.cyan,
           brightness: Brightness.dark,
         ),
-        cardTheme: CardThemeData(
+        cardTheme: CardTheme(
           color: Colors.grey[900],
           elevation: 4,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -50,6 +51,7 @@ class _ConfigPageState extends State<ConfigPage> {
   bool usbConnected = false;
   bool loading = true;
   List<String> logs = [];
+  Position? currentPosition;
 
   @override
   void initState() {
@@ -73,7 +75,6 @@ class _ConfigPageState extends State<ConfigPage> {
     traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
     imei.text = p.getString('imei') ?? '357152040915004';
     
-    // Inicializar serviço sem conectar
     _initService();
     setState(() => loading = false);
   }
@@ -87,13 +88,14 @@ class _ConfigPageState extends State<ConfigPage> {
       onTraccarStatusChanged: (status) => setState(() => traccarConnected = status),
       onUsbStatusChanged: (status) => setState(() => usbConnected = status),
       onLog: (msg) => _addLog(msg),
+      onLocationChanged: (pos) => setState(() => currentPosition = pos),
     );
   }
 
   Future<void> _toggleTraccar() async {
     if (traccarConnected) {
       service?.dispose();
-      _initService(); // Reiniciar para próxima conexão
+      _initService();
     } else {
       try {
         final p = await SharedPreferences.getInstance();
@@ -129,7 +131,7 @@ class _ConfigPageState extends State<ConfigPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('GT06 USB GATEWAY', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        title: const Text('GT06 TRACKER PRO', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
@@ -143,12 +145,43 @@ class _ConfigPageState extends State<ConfigPage> {
                 // Status Section
                 Row(
                   children: [
-                    Expanded(child: _statusTile("TRACCAR", traccarConnected, Icons.cloud_sync)),
+                    Expanded(child: _statusTile("SERVIDOR", traccarConnected, Icons.cloud_sync)),
                     const SizedBox(width: 12),
                     Expanded(child: _statusTile("ARDUINO USB", usbConnected, Icons.usb)),
+                    const SizedBox(width: 12),
+                    Expanded(child: _statusTile("GPS", currentPosition != null, Icons.gps_fixed)),
                   ],
                 ),
                 const SizedBox(height: 20),
+
+                // GPS Data Card
+                if (currentPosition != null)
+                  Card(
+                    color: Colors.cyan.withOpacity(0.05),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _gpsInfo("LATITUDE", currentPosition!.latitude.toStringAsFixed(6)),
+                              _gpsInfo("LONGITUDE", currentPosition!.longitude.toStringAsFixed(6)),
+                            ],
+                          ),
+                          const Divider(height: 24, color: Colors.cyan),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _gpsInfo("VELOCIDADE", "${(currentPosition!.speed * 3.6).toStringAsFixed(1)} km/h"),
+                              _gpsInfo("SÉRIE", service?.serial.toString() ?? "0"),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 12),
 
                 // Config Card
                 Card(
@@ -157,7 +190,7 @@ class _ConfigPageState extends State<ConfigPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("CONFIGURAÇÃO SERVIDOR", style: TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
+                        const Text("CONFIGURAÇÃO", style: TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 12),
                         _inputField("Host Traccar", traccarHost),
                         _inputField("Porta", traccarPort, isNumber: true),
@@ -173,7 +206,7 @@ class _ConfigPageState extends State<ConfigPage> {
                   children: [
                     Expanded(
                       child: _actionButton(
-                        traccarConnected ? "PARAR TRACCAR" : "INICIAR TRACCAR",
+                        traccarConnected ? "PARAR TRACKER" : "INICIAR TRACKER",
                         traccarConnected ? Colors.redAccent : Colors.cyan,
                         _toggleTraccar,
                         traccarConnected ? Icons.stop : Icons.play_arrow,
@@ -213,7 +246,7 @@ class _ConfigPageState extends State<ConfigPage> {
 
           // Terminal Log
           Container(
-            height: 220,
+            height: 180,
             decoration: BoxDecoration(
               color: Colors.grey[900],
               border: Border(top: BorderSide(color: Colors.cyan.withOpacity(0.3), width: 2)),
@@ -239,7 +272,7 @@ class _ConfigPageState extends State<ConfigPage> {
                       padding: const EdgeInsets.only(bottom: 2),
                       child: Text(
                         logs[index],
-                        style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontFamily: 'monospace'),
+                        style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontFamily: 'monospace'),
                       ),
                     ),
                   ),
@@ -252,9 +285,18 @@ class _ConfigPageState extends State<ConfigPage> {
     );
   }
 
+  Widget _gpsInfo(String label, String value) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+        Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+      ],
+    );
+  }
+
   Widget _statusTile(String label, bool active, IconData icon) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
         borderRadius: BorderRadius.circular(12),
@@ -262,10 +304,10 @@ class _ConfigPageState extends State<ConfigPage> {
       ),
       child: Column(
         children: [
-          Icon(icon, color: active ? Colors.cyan : Colors.grey[600]),
+          Icon(icon, color: active ? Colors.cyan : Colors.grey[600], size: 18),
           const SizedBox(height: 4),
-          Text(label, style: TextStyle(fontSize: 10, color: active ? Colors.cyan : Colors.grey[600])),
-          Text(active ? "ONLINE" : "OFFLINE", style: TextStyle(fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
+          Text(label, style: TextStyle(fontSize: 9, color: active ? Colors.cyan : Colors.grey[600])),
+          Text(active ? "ON" : "OFF", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
         ],
       ),
     );
@@ -292,11 +334,11 @@ class _ConfigPageState extends State<ConfigPage> {
     return ElevatedButton.icon(
       onPressed: onPressed,
       icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
       style: ElevatedButton.styleFrom(
-        backgroundColor: color.withOpacity(0.2),
+        backgroundColor: color.withOpacity(0.15),
         foregroundColor: color,
-        side: BorderSide(color: color),
+        side: BorderSide(color: color.withOpacity(0.5)),
         padding: const EdgeInsets.symmetric(vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
@@ -308,11 +350,11 @@ class _ConfigPageState extends State<ConfigPage> {
       onPressed: onPressed,
       style: OutlinedButton.styleFrom(
         foregroundColor: color,
-        side: BorderSide(color: color),
+        side: BorderSide(color: color.withOpacity(0.5)),
         padding: const EdgeInsets.symmetric(vertical: 16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
-      child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+      child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
     );
   }
 }

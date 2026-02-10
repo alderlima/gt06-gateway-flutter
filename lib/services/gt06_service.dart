@@ -3,24 +3,28 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:usb_serial/usb_serial.dart';
+import 'package:geolocator/geolocator.dart';
 
 class GT06Service {
   Socket? _traccarSocket;
   UsbPort? _usbPort;
   StreamSubscription<Uint8List>? _usbSubscription;
+  StreamSubscription<Position>? _gpsSubscription;
   
-  int _serial = 1;
+  int serial = 1;
   Timer? _heartbeatTimer;
 
   final String traccarHost;
   final int traccarPort;
   final String imei;
   final int heartbeatInterval;
+  final int locationInterval; // em segundos
 
   // Callbacks para atualizar a UI
   final Function(bool)? onTraccarStatusChanged;
   final Function(bool)? onUsbStatusChanged;
   final Function(String)? onLog;
+  final Function(Position)? onLocationChanged;
 
   bool _isTraccarConnected = false;
   bool _isUsbConnected = false;
@@ -30,9 +34,11 @@ class GT06Service {
     required this.traccarPort,
     required this.imei,
     this.heartbeatInterval = 10,
+    this.locationInterval = 30,
     this.onTraccarStatusChanged,
     this.onUsbStatusChanged,
     this.onLog,
+    this.onLocationChanged,
   });
 
   void _log(String msg) {
@@ -79,8 +85,8 @@ class GT06Service {
     body.addByte(length);
     body.addByte(protocol);
     body.add(payload);
-    body.addByte((_serial >> 8) & 0xFF);
-    body.addByte(_serial & 0xFF);
+    body.addByte((serial >> 8) & 0xFF);
+    body.addByte(serial & 0xFF);
 
     final crc = _crc16(body.toBytes());
 
@@ -93,7 +99,7 @@ class GT06Service {
     packet.addByte(0x0D);
     packet.addByte(0x0A);
 
-    _serial = (_serial + 1) & 0xFFFF;
+    serial = (serial + 1) & 0xFFFF;
     return packet.toBytes();
   }
 
@@ -118,6 +124,7 @@ class GT06Service {
       onTraccarStatusChanged?.call(true);
       _sendLogin();
       _startHeartbeat();
+      _startGpsTracking();
       _log("Conectado ao Traccar!");
     } catch (e) {
       _isTraccarConnected = false;
@@ -131,12 +138,107 @@ class GT06Service {
     _isTraccarConnected = false;
     onTraccarStatusChanged?.call(false);
     _heartbeatTimer?.cancel();
+    _stopGpsTracking();
     _log("Traccar desconectado");
   }
 
   void _onTraccarError(dynamic e) {
     _log("Erro Socket Traccar: $e");
     _onTraccarDisconnected();
+  }
+
+  /* ================= GPS TRACKING (GT06 0x22) ================= */
+  Future<void> _startGpsTracking() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _log("GPS desativado no dispositivo.");
+      return;
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        _log("Permissão de GPS negada.");
+        return;
+      }
+    }
+
+    _gpsSubscription = Geolocator.getPositionStream(
+      locationSettings: LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10, // Notificar a cada 10 metros
+      ),
+    ).listen((Position position) {
+      onLocationChanged?.call(position);
+      _sendLocationPacket(position);
+    });
+    
+    _log("Rastreamento GPS iniciado.");
+  }
+
+  void _stopGpsTracking() {
+    _gpsSubscription?.cancel();
+    _gpsSubscription = null;
+  }
+
+  void _sendLocationPacket(Position pos) {
+    if (!_isTraccarConnected) return;
+
+    final payload = BytesBuilder();
+    final now = DateTime.now().toUtc();
+
+    // 1. Date Time (6 bytes: YY MM DD HH MM SS)
+    payload.addByte(now.year % 100);
+    payload.addByte(now.month);
+    payload.addByte(now.day);
+    payload.addByte(now.hour);
+    payload.addByte(now.minute);
+    payload.addByte(now.second);
+
+    // 2. Quantity of GPS info (1 byte)
+    // Bits 7-4: Satellites, Bits 3-0: GPS length (always 12 for 0x22)
+    payload.addByte(0xCC); // Exemplo: 12 satélites
+
+    // 3. Latitude (4 bytes)
+    int lat = (pos.latitude * 60 * 30000).abs().toInt();
+    payload.addByte((lat >> 24) & 0xFF);
+    payload.addByte((lat >> 16) & 0xFF);
+    payload.addByte((lat >> 8) & 0xFF);
+    payload.addByte(lat & 0xFF);
+
+    // 4. Longitude (4 bytes)
+    int lon = (pos.longitude * 60 * 30000).abs().toInt();
+    payload.addByte((lon >> 24) & 0xFF);
+    payload.addByte((lon >> 16) & 0xFF);
+    payload.addByte((lon >> 8) & 0xFF);
+    payload.addByte(lon & 0xFF);
+
+    // 5. Speed (1 byte)
+    payload.addByte((pos.speed * 3.6).toInt()); // km/h
+
+    // 6. Course & Status (2 bytes)
+    // Bits 15-13: Status, Bits 12-10: Lat/Lon hemisphere, Bits 9-0: Course
+    int status = 0x4000; // GPS real-time
+    if (pos.latitude < 0) status |= 0x0400; // S
+    if (pos.longitude > 0) status |= 0x0800; // E
+    int course = pos.heading.toInt() & 0x3FF;
+    int courseStatus = status | course;
+    payload.addByte((courseStatus >> 8) & 0xFF);
+    payload.addByte(courseStatus & 0xFF);
+
+    // 7. MCC, MNC, LAC, Cell ID (9 bytes - Dummy para este exemplo)
+    payload.add([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    // 8. ACC, Data Upload Mode, GPS Real-time (3 bytes)
+    payload.add([0x01, 0x01, 0x01]);
+
+    final packet = _buildPacket(0x22, payload.toBytes());
+    _traccarSocket?.add(packet);
+    _log("Localização enviada: ${pos.latitude}, ${pos.longitude}");
   }
 
   /* ================= USB SERIAL CONNECTION ================= */
@@ -268,6 +370,7 @@ class GT06Service {
 
   void dispose() {
     _heartbeatTimer?.cancel();
+    _stopGpsTracking();
     _traccarSocket?.destroy();
     disconnectUsb();
     _isTraccarConnected = false;
