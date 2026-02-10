@@ -10,23 +10,18 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
-  # GPS e Localização
-  geolocator: ^13.0.2
-  
-  # USB Serial para Arduino
-  usb_serial: ^0.5.2
-  
-  # Estado e UI
-  provider: ^6.1.2
-  
-  # Utilidades
-  shared_preferences: ^2.3.2
+
+  shared_preferences: ^2.2.2
   cupertino_icons: ^1.0.8
+  usb_serial: ^0.5.0
+  geolocator: ^11.0.0
+  flutter_background_service: ^5.0.10
+  flutter_local_notifications: ^17.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^4.0.0
 
 flutter:
