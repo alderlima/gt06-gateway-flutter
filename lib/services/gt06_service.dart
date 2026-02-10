@@ -50,7 +50,6 @@ class GT06Service {
         notificationChannelId: 'gt06_tracker',
         initialNotificationTitle: 'Rastreador GT06',
         initialNotificationContent: 'Serviço de Rastreamento Ativo',
-        foregroundServiceType: ForegroundServiceType.location,
       ),
       iosConfiguration: IosConfiguration(
         autoStart: false,
@@ -107,11 +106,11 @@ class GT06Service {
 
       // GPS Stream
       _gpsSubscription = Geolocator.getPositionStream(
-        locationSettings: const AndroidSettings(
+        locationSettings: AndroidSettings(
           accuracy: LocationAccuracy.high,
           distanceFilter: 10,
-          intervalDuration: Duration(seconds: 10),
-          foregroundNotificationConfig: ForegroundNotificationConfig(
+          intervalDuration: const Duration(seconds: 10),
+          foregroundNotificationConfig: const ForegroundNotificationConfig(
             notificationTitle: "Rastreador GT06",
             notificationText: "Rastreando localização em tempo real...",
             enableWakeLock: true,
@@ -201,7 +200,8 @@ class GT06Service {
     try {
       List<UsbDevice> devices = await UsbSerial.listDevices();
       if (devices.isEmpty) return false;
-      UsbPort? port = await devices.first.create();
+      UsbDevice device = devices.first;
+      UsbPort? port = await device.create();
       if (port == null) return false;
       if (!await port.open()) return false;
       port.setPortParameters(9600, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
@@ -248,5 +248,7 @@ class GT06Service {
   void dispose() {
     stopTracking();
     disconnectUsb();
+    _gpsSubscription?.cancel();
+    _heartbeatTimer?.cancel();
   }
 }
