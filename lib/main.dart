@@ -22,7 +22,7 @@ class MyApp extends StatelessWidget {
           seedColor: Colors.cyan,
           brightness: Brightness.dark,
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: Colors.grey[900],
           elevation: 4,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
