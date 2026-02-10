@@ -4,12 +4,6 @@ import 'services/gt06_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint("Flutter Error: ${details.exception}");
-  };
-  
   runApp(const MyApp());
 }
 
@@ -20,10 +14,19 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'GT06 Gateway',
+      title: 'GT06 Gateway PRO',
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.cyan,
+          brightness: Brightness.dark,
+        ),
+        cardTheme: CardTheme(
+          color: Colors.grey[900],
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
       ),
       home: const ConfigPage(),
     );
@@ -40,16 +43,13 @@ class ConfigPage extends StatefulWidget {
 class _ConfigPageState extends State<ConfigPage> {
   final traccarHost = TextEditingController();
   final traccarPort = TextEditingController();
-  final arduinoHost = TextEditingController();
-  final arduinoPort = TextEditingController();
   final imei = TextEditingController();
 
   GT06Service? service;
   bool traccarConnected = false;
-  bool arduinoConnected = false;
+  bool usbConnected = false;
   bool loading = true;
   List<String> logs = [];
-  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -63,189 +63,146 @@ class _ConfigPageState extends State<ConfigPage> {
       final now = DateTime.now();
       final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
       logs.insert(0, "[$timeStr] $msg");
-      if (logs.length > 50) logs.removeLast();
+      if (logs.length > 100) logs.removeLast();
     });
   }
 
   Future<void> _loadConfig() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
-      traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
-      arduinoHost.text = p.getString('arduinoHost') ?? '192.168.1.4';
-      arduinoPort.text = (p.getInt('arduinoPort') ?? 8080).toString();
-      imei.text = p.getString('imei') ?? '357152040915004';
-    } catch (e) {
-      _addLog("Erro ao carregar configurações: $e");
-    }
+    final p = await SharedPreferences.getInstance();
+    traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
+    traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
+    imei.text = p.getString('imei') ?? '357152040915004';
+    
+    // Inicializar serviço sem conectar
+    _initService();
     setState(() => loading = false);
   }
 
-  Future<void> _saveConfig() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString('traccarHost', traccarHost.text.trim());
-      int? tPort = int.tryParse(traccarPort.text);
-      if (tPort != null) await p.setInt('traccarPort', tPort);
-      await p.setString('arduinoHost', arduinoHost.text.trim());
-      int? aPort = int.tryParse(arduinoPort.text);
-      if (aPort != null) await p.setInt('arduinoPort', aPort);
-      await p.setString('imei', imei.text.trim());
-    } catch (e) {
-      _addLog("Erro ao salvar config: $e");
-    }
-  }
-
-  Future<void> _connect() async {
-    final tPort = int.tryParse(traccarPort.text);
-    final aPort = int.tryParse(arduinoPort.text);
-
-    if (tPort == null || aPort == null || imei.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Preencha todos os campos corretamente")),
-      );
-      return;
-    }
-
-    setState(() => loading = true);
-    await _saveConfig();
-
-    try {
-      service?.dispose();
-      service = GT06Service(
-        traccarHost: traccarHost.text.trim(),
-        traccarPort: tPort,
-        arduinoHost: arduinoHost.text.trim(),
-        arduinoPort: aPort,
-        imei: imei.text.trim(),
-        onTraccarStatusChanged: (status) => setState(() => traccarConnected = status),
-        onArduinoStatusChanged: (status) => setState(() => arduinoConnected = status),
-        onLog: (msg) => _addLog(msg),
-      );
-
-      await service!.connect();
-      setState(() => loading = false);
-    } catch (e) {
-      setState(() => loading = false);
-      _addLog("ERRO AO CONECTAR: $e");
-    }
-  }
-
-  void _disconnect() {
+  void _initService() {
     service?.dispose();
-    setState(() {
-      traccarConnected = false;
-      arduinoConnected = false;
-    });
-    _addLog("Serviços parados pelo usuário");
+    service = GT06Service(
+      traccarHost: traccarHost.text.trim(),
+      traccarPort: int.tryParse(traccarPort.text) ?? 5023,
+      imei: imei.text.trim(),
+      onTraccarStatusChanged: (status) => setState(() => traccarConnected = status),
+      onUsbStatusChanged: (status) => setState(() => usbConnected = status),
+      onLog: (msg) => _addLog(msg),
+    );
   }
 
-  Widget field(String label, TextEditingController c, {TextInputType type = TextInputType.text}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: TextField(
-        controller: c,
-        keyboardType: type,
-        style: const TextStyle(fontSize: 14),
-        decoration: InputDecoration(
-          labelText: label,
-          isDense: true,
-          border: const OutlineInputBorder(),
-        ),
-      ),
-    );
+  Future<void> _toggleTraccar() async {
+    if (traccarConnected) {
+      service?.dispose();
+      _initService(); // Reiniciar para próxima conexão
+    } else {
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setString('traccarHost', traccarHost.text.trim());
+        await p.setInt('traccarPort', int.tryParse(traccarPort.text) ?? 5023);
+        await p.setString('imei', imei.text.trim());
+        
+        _initService();
+        await service!.connectTraccar();
+      } catch (e) {
+        _addLog("Erro Traccar: $e");
+      }
+    }
+  }
+
+  Future<void> _toggleUsb() async {
+    if (usbConnected) {
+      service?.disconnectUsb();
+    } else {
+      bool success = await service!.connectUsb();
+      if (!success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Falha ao conectar USB. Verifique o cabo OTG.")),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    bool anyConnected = traccarConnected || arduinoConnected;
+    if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
 
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('GT06 Gateway PRO'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        title: const Text('GT06 USB GATEWAY', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        centerTitle: true,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
       ),
       body: Column(
         children: [
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
               children: [
-                // Status das Conexões
+                // Status Section
                 Row(
                   children: [
-                    Expanded(
-                      child: _statusCard("Traccar", traccarConnected),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _statusCard("Arduino", arduinoConnected),
-                    ),
+                    Expanded(child: _statusTile("TRACCAR", traccarConnected, Icons.cloud_sync)),
+                    const SizedBox(width: 12),
+                    Expanded(child: _statusTile("ARDUINO USB", usbConnected, Icons.usb)),
                   ],
                 ),
-                const SizedBox(height: 12),
-                
-                // Configurações
+                const SizedBox(height: 20),
+
+                // Config Card
                 Card(
-                  elevation: 2,
                   child: Padding(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text("Configurações", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        const Divider(),
-                        field('IP Servidor Traccar', traccarHost),
-                        field('Porta Traccar', traccarPort, type: TextInputType.number),
-                        field('IMEI do Dispositivo', imei, type: TextInputType.number),
-                        const SizedBox(height: 8),
-                        field('IP do Arduino', arduinoHost),
-                        field('Porta do Arduino', arduinoPort, type: TextInputType.number),
+                        const Text("CONFIGURAÇÃO SERVIDOR", style: TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 12),
+                        _inputField("Host Traccar", traccarHost),
+                        _inputField("Porta", traccarPort, isNumber: true),
+                        _inputField("IMEI Dispositivo", imei, isNumber: true),
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
-                
-                // Ações
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton.icon(
-                    onPressed: anyConnected ? _disconnect : _connect,
-                    icon: Icon(anyConnected ? Icons.stop : Icons.play_arrow),
-                    label: Text(anyConnected ? 'DESCONECTAR TUDO' : 'INICIAR GATEWAY'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: anyConnected ? Colors.red.shade100 : Colors.green.shade100,
-                      foregroundColor: anyConnected ? Colors.red.shade900 : Colors.green.shade900,
+                const SizedBox(height: 20),
+
+                // Control Buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: _actionButton(
+                        traccarConnected ? "PARAR TRACCAR" : "INICIAR TRACCAR",
+                        traccarConnected ? Colors.redAccent : Colors.cyan,
+                        _toggleTraccar,
+                        traccarConnected ? Icons.stop : Icons.play_arrow,
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _actionButton(
+                        usbConnected ? "DESCONECTAR USB" : "CONECTAR USB",
+                        usbConnected ? Colors.orangeAccent : Colors.greenAccent,
+                        _toggleUsb,
+                        Icons.usb,
+                      ),
+                    ),
+                  ],
                 ),
                 
-                if (arduinoConnected) ...[
-                  const SizedBox(height: 16),
-                  const Text("Comandos Diretos", style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
+                if (usbConnected) ...[
+                  const SizedBox(height: 24),
+                  const Text("TESTES DE COMANDO (USB 9600)", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 12)),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => service?.sendToArduino("ENGINE_STOP"),
-                          icon: const Icon(Icons.block, color: Colors.red),
-                          label: const Text("BLOQUEAR"),
-                        ),
+                        child: _testButton("BLOQUEAR", Colors.red, () => service?.sendToArduino("ENGINE_STOP")),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 12),
                       Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => service?.sendToArduino("ENGINE_RESUME"),
-                          icon: const Icon(Icons.check_circle, color: Colors.green),
-                          label: const Text("LIBERAR"),
-                        ),
+                        child: _testButton("LIBERAR", Colors.green, () => service?.sendToArduino("ENGINE_RESUME")),
                       ),
                     ],
                   ),
@@ -253,31 +210,37 @@ class _ConfigPageState extends State<ConfigPage> {
               ],
             ),
           ),
-          
-          // Terminal de Logs
+
+          // Terminal Log
           Container(
-            height: 180,
-            width: double.infinity,
-            color: Colors.black87,
-            padding: const EdgeInsets.all(8),
+            height: 220,
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              border: Border(top: BorderSide(color: Colors.cyan.withOpacity(0.3), width: 2)),
+            ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text("LOGS DO SISTEMA", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12)),
-                    Icon(Icons.terminal, color: Colors.green, size: 14),
-                  ],
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  color: Colors.black,
+                  child: const Row(
+                    children: [
+                      Icon(Icons.terminal, color: Colors.cyan, size: 16),
+                      SizedBox(width: 8),
+                      Text("CONSOLE LOGS", style: TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
                 ),
-                const Divider(color: Colors.green, height: 8),
                 Expanded(
                   child: ListView.builder(
-                    reverse: false,
+                    padding: const EdgeInsets.all(8),
                     itemCount: logs.length,
-                    itemBuilder: (context, index) => Text(
-                      logs[index],
-                      style: const TextStyle(color: Colors.white70, fontSize: 11, fontFamily: 'monospace'),
+                    itemBuilder: (context, index) => Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        logs[index],
+                        style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontFamily: 'monospace'),
+                      ),
                     ),
                   ),
                 ),
@@ -289,29 +252,67 @@ class _ConfigPageState extends State<ConfigPage> {
     );
   }
 
-  Widget _statusCard(String title, bool isConnected) {
-    return Card(
-      color: isConnected ? Colors.green.shade50 : Colors.red.shade50,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-        child: Row(
-          children: [
-            Icon(
-              isConnected ? Icons.check_circle : Icons.error,
-              color: isConnected ? Colors.green : Colors.red,
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              title,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: isConnected ? Colors.green.shade900 : Colors.red.shade900,
-              ),
-            ),
-          ],
+  Widget _statusTile(String label, bool active, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: active ? Colors.cyan : Colors.grey[800]!),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: active ? Colors.cyan : Colors.grey[600]),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 10, color: active ? Colors.cyan : Colors.grey[600])),
+          Text(active ? "ONLINE" : "OFFLINE", style: TextStyle(fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
+        ],
+      ),
+    );
+  }
+
+  Widget _inputField(String label, TextEditingController controller, {bool isNumber = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+          isDense: true,
+          enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey[800]!)),
+          focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.cyan)),
         ),
       ),
+    );
+  }
+
+  Widget _actionButton(String label, Color color, VoidCallback onPressed, IconData icon) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color.withOpacity(0.2),
+        foregroundColor: color,
+        side: BorderSide(color: color),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+
+  Widget _testButton(String label, Color color, VoidCallback onPressed) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: color,
+        side: BorderSide(color: color),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
     );
   }
 }

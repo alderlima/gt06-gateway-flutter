@@ -2,38 +2,36 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:usb_serial/usb_serial.dart';
 
 class GT06Service {
   Socket? _traccarSocket;
-  Socket? _arduinoSocket;
+  UsbPort? _usbPort;
+  StreamSubscription<Uint8List>? _usbSubscription;
+  
   int _serial = 1;
   Timer? _heartbeatTimer;
-  Timer? _arduinoReconnectTimer;
 
   final String traccarHost;
   final int traccarPort;
-  final String arduinoHost;
-  final int arduinoPort;
   final String imei;
   final int heartbeatInterval;
 
   // Callbacks para atualizar a UI
   final Function(bool)? onTraccarStatusChanged;
-  final Function(bool)? onArduinoStatusChanged;
+  final Function(bool)? onUsbStatusChanged;
   final Function(String)? onLog;
 
   bool _isTraccarConnected = false;
-  bool _isArduinoConnected = false;
+  bool _isUsbConnected = false;
 
   GT06Service({
     required this.traccarHost,
     required this.traccarPort,
-    required this.arduinoHost,
-    required this.arduinoPort,
     required this.imei,
     this.heartbeatInterval = 10,
     this.onTraccarStatusChanged,
-    this.onArduinoStatusChanged,
+    this.onUsbStatusChanged,
     this.onLog,
   });
 
@@ -99,12 +97,6 @@ class GT06Service {
     return packet.toBytes();
   }
 
-  /* ================= CONNECT ALL ================= */
-  Future<void> connect() async {
-    await connectTraccar();
-    await connectArduino();
-  }
-
   /* ================= TRACCAR CONNECTION ================= */
   Future<void> connectTraccar() async {
     try {
@@ -126,103 +118,109 @@ class GT06Service {
       onTraccarStatusChanged?.call(true);
       _sendLogin();
       _startHeartbeat();
-      _log("Conectado ao Traccar com sucesso!");
+      _log("Conectado ao Traccar!");
     } catch (e) {
       _isTraccarConnected = false;
       onTraccarStatusChanged?.call(false);
-      _log("Erro na conexão Traccar: $e");
+      _log("Erro Traccar: $e");
       rethrow;
     }
   }
 
-  /* ================= ARDUINO CONNECTION ================= */
-  Future<void> connectArduino() async {
+  void _onTraccarDisconnected() {
+    _isTraccarConnected = false;
+    onTraccarStatusChanged?.call(false);
+    _heartbeatTimer?.cancel();
+    _log("Traccar desconectado");
+  }
+
+  void _onTraccarError(dynamic e) {
+    _log("Erro Socket Traccar: $e");
+    _onTraccarDisconnected();
+  }
+
+  /* ================= USB SERIAL CONNECTION ================= */
+  Future<bool> connectUsb() async {
     try {
-      _log("Conectando ao Arduino: $arduinoHost:$arduinoPort");
-      _arduinoSocket = await Socket.connect(
-        arduinoHost,
-        arduinoPort,
-        timeout: const Duration(seconds: 10),
-      );
+      List<UsbDevice> devices = await UsbSerial.listDevices();
+      if (devices.isEmpty) {
+        _log("Nenhum dispositivo USB encontrado.");
+        return false;
+      }
 
-      _arduinoSocket!.listen(
-        (data) => _log("Arduino: ${String.fromCharCodes(data).trim()}"),
-        onDone: () => _onArduinoDisconnected(),
-        onError: (e) => _onArduinoError(e),
-        cancelOnError: false,
-      );
+      _log("Dispositivo encontrado: ${devices.first.deviceName}");
+      UsbPort? port = await devices.first.create();
+      if (port == null) return false;
 
-      _isArduinoConnected = true;
-      onArduinoStatusChanged?.call(true);
-      _arduinoReconnectTimer?.cancel();
-      _log("Conectado ao Arduino com sucesso!");
+      bool openResult = await port.open();
+      if (!openResult) {
+        _log("Falha ao abrir porta USB.");
+        return false;
+      }
+
+      await port.setDTR(true);
+      await port.setRTS(true);
+      port.setPortParameters(9600, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+
+      _usbPort = port;
+      _usbSubscription = _usbPort!.inputStream!.listen((Uint8List data) {
+        String msg = String.fromCharCodes(data).trim();
+        if (msg.isNotEmpty) _log("Arduino: $msg");
+      });
+
+      _isUsbConnected = true;
+      onUsbStatusChanged?.call(true);
+      _log("USB Serial conectado (9600 bps)");
+      return true;
     } catch (e) {
-      _isArduinoConnected = false;
-      onArduinoStatusChanged?.call(false);
-      _log("Erro na conexão Arduino: $e");
-      _scheduleArduinoReconnect();
+      _log("Erro USB: $e");
+      return false;
     }
   }
 
-  void _scheduleArduinoReconnect() {
-    _arduinoReconnectTimer?.cancel();
-    _arduinoReconnectTimer = Timer(const Duration(seconds: 10), () {
-      if (!_isArduinoConnected) {
-        connectArduino();
-      }
-    });
+  void disconnectUsb() {
+    _usbSubscription?.cancel();
+    _usbPort?.close();
+    _usbPort = null;
+    _isUsbConnected = false;
+    onUsbStatusChanged?.call(false);
+    _log("USB Serial desconectado");
   }
 
-  /* ================= LOGIN ================= */
+  /* ================= PROTOCOL LOGIC ================= */
   void _sendLogin() {
     try {
       final imeiBytes = _imeiToBcd(imei);
       final packet = _buildPacket(0x01, imeiBytes);
       _traccarSocket?.add(packet);
     } catch (e) {
-      _log("Erro ao enviar login: $e");
+      _log("Erro login: $e");
     }
   }
 
-  /* ================= HEARTBEAT ================= */
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(
-      Duration(seconds: heartbeatInterval),
-      (_) {
-        try {
-          if (_traccarSocket != null && _isTraccarConnected) {
-            final payload = Uint8List.fromList([0x00, 0x00, 0x00]);
-            _traccarSocket?.add(_buildPacket(0x13, payload));
-          }
-        } catch (e) {
-          _log("Erro no heartbeat: $e");
-        }
-      },
-    );
+    _heartbeatTimer = Timer.periodic(Duration(seconds: heartbeatInterval), (_) {
+      if (_isTraccarConnected) {
+        final payload = Uint8List.fromList([0x00, 0x00, 0x00]);
+        _traccarSocket?.add(_buildPacket(0x13, payload));
+      }
+    });
   }
 
-  /* ================= RECEIVE TRACCAR ================= */
   void _onTraccarData(Uint8List data) {
     if (data.length < 10) return;
-    
     int index = 0;
     while (index < data.length - 1) {
       if (data[index] == 0x78 && data[index + 1] == 0x78) {
-        if (index + 2 >= data.length) break;
-        
         final length = data[index + 2];
-        final totalPacketLength = length + 5; 
-        
+        final totalPacketLength = length + 5;
         if (index + totalPacketLength > data.length) break;
-        
         final protocol = data[index + 3];
-        final payloadLength = length - 3; 
-        
+        final payloadLength = length - 3;
         if (payloadLength >= 0) {
           final payload = data.sublist(index + 4, index + 4 + payloadLength);
           final serial = (data[index + 4 + payloadLength] << 8) | data[index + 5 + payloadLength];
-          
           _handleResponse(protocol, payload, serial);
         }
         index += totalPacketLength;
@@ -236,17 +234,13 @@ class GT06Service {
     if (protocol == 0x80) {
       _handleCommand(payload, serial);
     } else if (protocol == 0x01) {
-      _log("Traccar: Login aceito");
-    } else if (protocol == 0x13) {
-      // Heartbeat ACK
+      _log("Traccar: Login OK");
     }
   }
 
-  /* ================= COMMAND HANDLING ================= */
   Future<void> _handleCommand(Uint8List payload, int serial) async {
-    final clean = payload.where((b) => b != 0).toList();
-    final text = String.fromCharCodes(clean);
-    _log("Comando recebido do Traccar: $text");
+    final text = String.fromCharCodes(payload.where((b) => b != 0));
+    _log("Comando Traccar: $text");
 
     if (text.contains("Relay,1")) {
       await sendToArduino("ENGINE_STOP");
@@ -254,63 +248,28 @@ class GT06Service {
       await sendToArduino("ENGINE_RESUME");
     }
 
-    // Enviar ACK para o Traccar
     _traccarSocket?.add(_buildPacket(0x80, Uint8List(0)));
   }
 
   /* ================= SEND TO ARDUINO ================= */
   Future<void> sendToArduino(String cmd) async {
-    if (_arduinoSocket != null && _isArduinoConnected) {
+    if (_usbPort != null && _isUsbConnected) {
       try {
-        _log("Enviando para Arduino: $cmd");
-        _arduinoSocket!.write("$cmd\n");
-        await _arduinoSocket!.flush();
+        _log("Enviando USB: $cmd");
+        await _usbPort!.write(Uint8List.fromList("$cmd\n".codeUnits));
       } catch (e) {
-        _log("Erro ao enviar para Arduino: $e");
-        _onArduinoDisconnected();
+        _log("Erro envio USB: $e");
+        disconnectUsb();
       }
     } else {
-      _log("Arduino desconectado. Tentando reconectar e enviar...");
-      await connectArduino();
-      if (_isArduinoConnected) {
-        sendToArduino(cmd);
-      }
+      _log("USB não conectado. Comando ignorado.");
     }
   }
 
-  /* ================= STATUS HANDLERS ================= */
-  void _onTraccarError(error) {
-    _log("Erro no socket Traccar: $error");
-    _onTraccarDisconnected();
-  }
-
-  void _onTraccarDisconnected() {
-    _isTraccarConnected = false;
-    onTraccarStatusChanged?.call(false);
-    _log("Traccar desconectado");
-  }
-
-  void _onArduinoError(error) {
-    _log("Erro no socket Arduino: $error");
-    _onArduinoDisconnected();
-  }
-
-  void _onArduinoDisconnected() {
-    _isArduinoConnected = false;
-    onArduinoStatusChanged?.call(false);
-    _log("Arduino desconectado");
-    _scheduleArduinoReconnect();
-  }
-
-  /* ================= CLEANUP ================= */
   void dispose() {
     _heartbeatTimer?.cancel();
-    _arduinoReconnectTimer?.cancel();
     _traccarSocket?.destroy();
-    _arduinoSocket?.destroy();
-    _traccarSocket = null;
-    _arduinoSocket = null;
+    disconnectUsb();
     _isTraccarConnected = false;
-    _isArduinoConnected = false;
   }
 }
