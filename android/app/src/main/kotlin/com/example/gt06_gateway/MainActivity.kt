@@ -12,7 +12,6 @@ class MainActivity: FlutterActivity() {
         
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler {
             call, result ->
-            
             when (call.method) {
                 "startForegroundService" -> {
                     ForegroundService.startService(this)
@@ -27,11 +26,5 @@ class MainActivity: FlutterActivity() {
                 }
             }
         }
-    }
-    
-    override fun onDestroy() {
-        // Não pare o serviço quando a atividade for destruída
-        // O serviço continuará rodando em background
-        super.onDestroy()
     }
 }

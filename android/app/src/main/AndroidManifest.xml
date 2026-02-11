@@ -1,21 +1,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.gt06_gateway">
     
-    <!-- Permissões -->
+    <!-- Permissões de Rede e Socket -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    
+    <!-- Permissões de Localização -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    
+    <!-- Permissões para USB -->
     <uses-permission android:name="android.permission.USB_PERMISSION" />
+
+    <!-- OBRIGATÓRIO PARA ANDROID 14+ (SDK 34+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    
+    <!-- CRUCIAL PARA MANTER O APP VIVO -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
+    
     <application
         android:label="GT06 Gateway PRO"
         android:name="${applicationName}"
@@ -49,14 +55,14 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Serviço de Foreground -->
+        <!-- Serviço de Foreground nativo -->
         <service
             android:name=".ForegroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location|dataSync" />
         
-        <!-- Receptor de Boot -->
+        <!-- Receptor para boot completo -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -70,7 +76,6 @@
 
     </application>
 
-    <!-- Queries para USB -->
     <queries>
         <intent>
             <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />

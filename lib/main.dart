@@ -1,8 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'services/gt06_service.dart';
-import 'package:flutter/services.dart'; // Para MethodChannel
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,7 +29,16 @@ Future<void> _startForegroundService() async {
     const platform = MethodChannel('com.example.gt06_gateway/service');
     await platform.invokeMethod('startForegroundService');
   } catch (e) {
-    debugPrint('Erro ao iniciar serviço: $e');
+    debugPrint("Erro ao iniciar foreground service: $e");
+  }
+}
+
+Future<void> _stopForegroundService() async {
+  try {
+    const platform = MethodChannel('com.example.gt06_gateway/service');
+    await platform.invokeMethod('stopForegroundService');
+  } catch (e) {
+    debugPrint("Erro ao parar foreground service: $e");
   }
 }
 
@@ -47,13 +57,11 @@ class MyApp extends StatelessWidget {
           seedColor: Colors.cyan,
           brightness: Brightness.dark,
         ),
-        // CORREÇÃO AQUI: use CardTheme, NÃO CardThemeData
-        cardTheme: CardTheme(
+        // Mantido CardThemeData conforme solicitado
+        cardTheme: CardThemeData(
           color: Colors.grey[900],
           elevation: 4,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
       home: const ConfigPage(),
@@ -98,10 +106,14 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     setState(() {
-      appInBackground = state == AppLifecycleState.paused ||
+      appInBackground = state == AppLifecycleState.paused || 
                         state == AppLifecycleState.inactive;
     });
-    _addLog(appInBackground ? "App em background" : "App em foreground");
+    if (state == AppLifecycleState.paused) {
+      _addLog("App em background - mantendo conexões ativas");
+    } else if (state == AppLifecycleState.resumed) {
+      _addLog("App em foreground");
+    }
   }
 
   void _addLog(String msg) {
@@ -109,8 +121,8 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     setState(() {
       final now = DateTime.now();
       final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-      final bgTag = appInBackground ? "[BG] " : "";
-      logs.insert(0, "[$timeStr] $bgTag$msg");
+      final bgIndicator = appInBackground ? "[BG] " : "";
+      logs.insert(0, "[$timeStr] $bgIndicator$msg");
       if (logs.length > 100) logs.removeLast();
     });
   }
@@ -142,7 +154,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     if (traccarConnected) {
       service?.dispose();
       _initService();
-      setState(() => traccarConnected = false);
     } else {
       try {
         final p = await SharedPreferences.getInstance();
@@ -168,6 +179,34 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
           const SnackBar(content: Text("Falha ao conectar USB. Verifique o cabo OTG.")),
         );
       }
+    }
+  }
+
+  // Botão para sair do aplicativo completamente
+  Future<void> _exitApp() async {
+    // Confirmação
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Encerrar aplicativo"),
+        content: const Text("Todas as conexões serão finalizadas. Deseja sair?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("CANCELAR"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("SAIR", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      _addLog("Encerrando aplicativo...");
+      await service?.dispose();
+      await _stopForegroundService();
+      exit(0); // Encerra o processo
     }
   }
 
@@ -201,6 +240,13 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.exit_to_app, color: Colors.redAccent),
+            onPressed: _exitApp,
+            tooltip: "Encerrar aplicativo",
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -330,16 +376,14 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                       const Spacer(),
                       Text(
                         appInBackground ? "[BACKGROUND]" : "[FOREGROUND]",
-                        style: TextStyle(
-                          color: appInBackground ? Colors.amber : Colors.green,
-                          fontSize: 9,
-                        ),
+                        style: TextStyle(color: appInBackground ? Colors.amber : Colors.green, fontSize: 9),
                       ),
                     ],
                   ),
                 ),
                 Expanded(
                   child: ListView.builder(
+                    reverse: true,
                     padding: const EdgeInsets.all(8),
                     itemCount: logs.length,
                     itemBuilder: (context, index) => Padding(
@@ -359,76 +403,66 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _gpsInfo(String label, String value) {
-    return Column(
+  Widget _gpsInfo(String label, String value) => Column(
+    children: [
+      Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+      Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+    ],
+  );
+
+  Widget _statusTile(String label, bool active, IconData icon) => Container(
+    padding: const EdgeInsets.all(8),
+    decoration: BoxDecoration(
+      color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: active ? Colors.cyan : Colors.grey[800]!),
+    ),
+    child: Column(
       children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+        Icon(icon, color: active ? Colors.cyan : Colors.grey[600], size: 18),
+        const SizedBox(height: 4),
+        Text(label, style: TextStyle(fontSize: 9, color: active ? Colors.cyan : Colors.grey[600])),
+        Text(active ? "ON" : "OFF", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
       ],
-    );
-  }
+    ),
+  );
 
-  Widget _statusTile(String label, bool active, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: active ? Colors.cyan : Colors.grey[800]!),
+  Widget _inputField(String label, TextEditingController controller, {bool isNumber = false}) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: TextField(
+      controller: controller,
+      keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+        isDense: true,
+        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey[800]!)),
+        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.cyan)),
       ),
-      child: Column(
-        children: [
-          Icon(icon, color: active ? Colors.cyan : Colors.grey[600], size: 18),
-          const SizedBox(height: 4),
-          Text(label, style: TextStyle(fontSize: 9, color: active ? Colors.cyan : Colors.grey[600])),
-          Text(active ? "ON" : "OFF", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.redAccent)),
-        ],
-      ),
-    );
-  }
+    ),
+  );
 
-  Widget _inputField(String label, TextEditingController controller, {bool isNumber = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: controller,
-        keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-          isDense: true,
-          enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey[800]!)),
-          focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.cyan)),
-        ),
-      ),
-    );
-  }
+  Widget _actionButton(String label, Color color, VoidCallback onPressed, IconData icon) => ElevatedButton.icon(
+    onPressed: onPressed,
+    icon: Icon(icon, size: 18),
+    label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+    style: ElevatedButton.styleFrom(
+      backgroundColor: color.withOpacity(0.15),
+      foregroundColor: color,
+      side: BorderSide(color: color.withOpacity(0.5)),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+  );
 
-  Widget _actionButton(String label, Color color, VoidCallback onPressed, IconData icon) {
-    return ElevatedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color.withOpacity(0.15),
-        foregroundColor: color,
-        side: BorderSide(color: color.withOpacity(0.5)),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
-  }
-
-  Widget _testButton(String label, Color color, VoidCallback onPressed) {
-    return OutlinedButton(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        foregroundColor: color,
-        side: BorderSide(color: color.withOpacity(0.5)),
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-      child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-    );
-  }
+  Widget _testButton(String label, Color color, VoidCallback onPressed) => OutlinedButton(
+    onPressed: onPressed,
+    style: OutlinedButton.styleFrom(
+      foregroundColor: color,
+      side: BorderSide(color: color.withOpacity(0.5)),
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+    child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+  );
 }
