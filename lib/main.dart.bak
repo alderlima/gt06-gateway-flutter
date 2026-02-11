@@ -2,16 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'services/gt06_service.dart';
-import 'background_service.dart'; // Novo
+
+// Importar para comunicação com o serviço nativo
+import 'package:flutter/services.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Inicializar o serviço de background
-  await FlutterBackgroundService().startService();
-  
   // Solicitar permissões de localização no início
   await _requestLocationPermission();
+  
+  // Iniciar serviço de foreground
+  await _startForegroundService();
   
   runApp(const MyApp());
 }
@@ -26,10 +28,34 @@ Future<void> _requestLocationPermission() async {
     }
   }
   
+  // Para Android 10+, solicitar permissão de background
+  if (permission == LocationPermission.whileInUse) {
+    permission = await Geolocator.requestPermission();
+  }
+  
   // Verificar se os serviços de localização estão ativados
   bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
   if (!serviceEnabled) {
     print('Serviços de localização desativados');
+  }
+}
+
+Future<void> _startForegroundService() async {
+  try {
+    // Iniciar serviço nativo via platform channel
+    const platform = MethodChannel('com.example.gt06_gateway/service');
+    await platform.invokeMethod('startForegroundService');
+  } catch (e) {
+    print('Erro ao iniciar serviço: $e');
+  }
+}
+
+Future<void> _stopForegroundService() async {
+  try {
+    const platform = MethodChannel('com.example.gt06_gateway/service');
+    await platform.invokeMethod('stopForegroundService');
+  } catch (e) {
+    print('Erro ao parar serviço: $e');
   }
 }
 
@@ -66,96 +92,50 @@ class ConfigPage extends StatefulWidget {
   State<ConfigPage> createState() => _ConfigPageState();
 }
 
-class _ConfigPageState extends State<ConfigPage> {
+class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
   final traccarHost = TextEditingController();
   final traccarPort = TextEditingController();
   final imei = TextEditingController();
 
+  GT06Service? service;
   bool traccarConnected = false;
   bool usbConnected = false;
   bool loading = true;
+  bool appInBackground = false;
   List<String> logs = [];
   Position? currentPosition;
-
-  final FlutterBackgroundService _backgroundService = FlutterBackgroundService();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadConfig();
-    _setupBackgroundService();
   }
 
-  void _setupBackgroundService() {
-    // Ouvir logs do serviço de background
-    _backgroundService.on('log').listen((event) {
-      if (event != null) {
-        final String message = event['message'];
-        _addLog(message);
-      }
-    });
-
-    // Ouvir atualizações de localização
-    _backgroundService.on('location').listen((event) {
-      if (event != null) {
-        setState(() {
-          currentPosition = Position(
-            latitude: event['latitude'],
-            longitude: event['longitude'],
-            timestamp: DateTime.now(),
-            altitude: 0,
-            accuracy: 0,
-            heading: event['heading'],
-            speed: event['speed'],
-            speedAccuracy: 0,
-            altitudeAccuracy: 0,
-            headingAccuracy: 0,
-          );
-        });
-      }
-    });
-
-    // Verificar se o serviço está conectado ao Traccar
-    _backgroundService.on('traccarStatus').listen((event) {
-      setState(() {
-        traccarConnected = event['connected'];
-      });
-    });
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    service?.dispose();
+    super.dispose();
   }
 
-  void _addLog(String msg) {
-    if (!mounted) return;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
     setState(() {
-      final now = DateTime.now();
-      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-      logs.insert(0, "[$timeStr] $msg");
-      if (logs.length > 100) logs.removeLast();
+      appInBackground = state == AppLifecycleState.paused || 
+                        state == AppLifecycleState.inactive;
     });
-  }
-
-  Future<void> _loadConfig() async {
-    final p = await SharedPreferences.getInstance();
-    traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
-    traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
-    imei.text = p.getString('imei') ?? '357152040915004';
-    setState(() => loading = false);
-  }
-
-  Future<void> _toggleTraccar() async {
-    if (traccarConnected) {
-      // Parar o serviço
-      _backgroundService.invoke('stopService');
-      setState(() => traccarConnected = false);
-    } else {
-      // Salvar configurações
-      final p = await SharedPreferences.getInstance();
-      await p.setString('traccarHost', traccarHost.text.trim());
-      await p.setInt('traccarPort', int.tryParse(traccarPort.text) ?? 5023);
-      await p.setString('imei', imei.text.trim());
-
-      // Iniciar o serviço de background
-      _backgroundService.startService();
-      setState(() => traccarConnected = true);
+    
+    if (state == AppLifecycleState.paused) {
+      // App foi para background - manter conexão
+      _addLog("App em background - mantendo conexões ativas");
+    } else if (state == AppLifecycleState.resumed) {
+      // App voltou ao foreground
+      _addLog("App em foreground");
+    } else if (state == AppLifecycleState.detached) {
+      // App está sendo fechado
+      _addLog("App sendo fechado");
     }
   }
 
@@ -164,7 +144,8 @@ class _ConfigPageState extends State<ConfigPage> {
     setState(() {
       final now = DateTime.now();
       final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-      logs.insert(0, "[$timeStr] $msg");
+      final backgroundIndicator = appInBackground ? "[BG] " : "";
+      logs.insert(0, "[$timeStr] $backgroundIndicator$msg");
       if (logs.length > 100) logs.removeLast();
     });
   }
@@ -196,6 +177,7 @@ class _ConfigPageState extends State<ConfigPage> {
     if (traccarConnected) {
       service?.dispose();
       _initService();
+      setState(() => traccarConnected = false);
     } else {
       try {
         final p = await SharedPreferences.getInstance();
@@ -205,6 +187,11 @@ class _ConfigPageState extends State<ConfigPage> {
         
         _initService();
         await service!.connectTraccar();
+        
+        // Solicitar permissão de ignorar otimização de bateria
+        if (!await Geolocator.isLocationServiceEnabled()) {
+          _addLog("GPS desativado. Ative para rastreamento em background.");
+        }
       } catch (e) {
         _addLog("Erro Traccar: $e");
       }
@@ -231,7 +218,30 @@ class _ConfigPageState extends State<ConfigPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('GT06 TRACKER PRO', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('GT06 TRACKER PRO', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+            if (appInBackground)
+              Container(
+                margin: const EdgeInsets.only(left: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.amber),
+                ),
+                child: const Text(
+                  'BACKGROUND',
+                  style: TextStyle(
+                    color: Colors.amber,
+                    fontSize: 8,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+          ],
+        ),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
@@ -340,6 +350,43 @@ class _ConfigPageState extends State<ConfigPage> {
                     ],
                   ),
                 ],
+                
+                // Info sobre background
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blueGrey.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blueGrey.withOpacity(0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.info, color: Colors.blue, size: 16),
+                          SizedBox(width: 8),
+                          Text("MODO BACKGROUND", style: TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        "O aplicativo continuará funcionando em background com notificação permanente.",
+                        style: TextStyle(color: Colors.grey, fontSize: 10),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        appInBackground ? "Status: EM BACKGROUND" : "Status: EM FOREGROUND",
+                        style: TextStyle(
+                          color: appInBackground ? Colors.amber : Colors.green,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -356,11 +403,19 @@ class _ConfigPageState extends State<ConfigPage> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   color: Colors.black,
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.terminal, color: Colors.cyan, size: 16),
-                      SizedBox(width: 8),
-                      Text("CONSOLE LOGS", style: TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold)),
+                      const Icon(Icons.terminal, color: Colors.cyan, size: 16),
+                      const SizedBox(width: 8),
+                      const Text("CONSOLE LOGS", style: TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold)),
+                      const Spacer(),
+                      Text(
+                        appInBackground ? "[BACKGROUND]" : "[FOREGROUND]",
+                        style: TextStyle(
+                          color: appInBackground ? Colors.amber : Colors.green,
+                          fontSize: 9,
+                        ),
+                      ),
                     ],
                   ),
                 ),
