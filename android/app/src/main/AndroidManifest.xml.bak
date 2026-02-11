@@ -1,20 +1,29 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.gt06_gateway">
     
-    <!-- Permissões -->
+    <!-- Permissões de Rede e Socket -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    
+    <!-- Permissões de Localização -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    
+    <!-- Permissões para USB -->
     <uses-permission android:name="android.permission.USB_PERMISSION" />
+
+    <!-- OBRIGATÓRIO PARA ANDROID 14+ (SDK 34+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    
+    <!-- CRUCIAL PARA MANTER O APP VIVO -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    
+    <!-- Permissão para vibrar (opcional para notificações) -->
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:label="GT06 Gateway PRO"
@@ -35,6 +44,7 @@
             android:windowSoftInputMode="adjustResize"
             android:screenOrientation="portrait">
             
+            <!-- Tema normal -->
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
@@ -45,20 +55,21 @@
             </intent-filter>
         </activity>
 
+        <!-- Meta-dados do Flutter -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Serviço de Foreground -->
+        <!-- Serviço de Foreground para manter o app rodando em background -->
         <service
-            android:name=".ForegroundService"
+            android:name="com.example.gt06_gateway.ForegroundService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location|dataSync" />
         
-        <!-- Receptor de Boot -->
+        <!-- Receivers para manter o app vivo -->
         <receiver
-            android:name=".BootReceiver"
+            android:name="com.example.gt06_gateway.BootReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>

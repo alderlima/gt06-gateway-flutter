@@ -2,60 +2,33 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'services/gt06_service.dart';
-
-// Importar para comunicação com o serviço nativo
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart'; // Para MethodChannel
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Solicitar permissões de localização no início
   await _requestLocationPermission();
-  
-  // Iniciar serviço de foreground
   await _startForegroundService();
   
   runApp(const MyApp());
 }
 
 Future<void> _requestLocationPermission() async {
-  // Verificar permissão de localização
   LocationPermission permission = await Geolocator.checkPermission();
   if (permission == LocationPermission.denied) {
     permission = await Geolocator.requestPermission();
-    if (permission == LocationPermission.denied) {
-      print('Permissão de localização negada');
-    }
   }
-  
-  // Para Android 10+, solicitar permissão de background
   if (permission == LocationPermission.whileInUse) {
-    permission = await Geolocator.requestPermission();
-  }
-  
-  // Verificar se os serviços de localização estão ativados
-  bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-  if (!serviceEnabled) {
-    print('Serviços de localização desativados');
+    await Geolocator.requestPermission();
   }
 }
 
 Future<void> _startForegroundService() async {
   try {
-    // Iniciar serviço nativo via platform channel
     const platform = MethodChannel('com.example.gt06_gateway/service');
     await platform.invokeMethod('startForegroundService');
   } catch (e) {
-    print('Erro ao iniciar serviço: $e');
-  }
-}
-
-Future<void> _stopForegroundService() async {
-  try {
-    const platform = MethodChannel('com.example.gt06_gateway/service');
-    await platform.invokeMethod('stopForegroundService');
-  } catch (e) {
-    print('Erro ao parar serviço: $e');
+    debugPrint('Erro ao iniciar serviço: $e');
   }
 }
 
@@ -74,10 +47,13 @@ class MyApp extends StatelessWidget {
           seedColor: Colors.cyan,
           brightness: Brightness.dark,
         ),
-        cardTheme: CardThemeData(
+        // CORREÇÃO AQUI: use CardTheme, NÃO CardThemeData
+        cardTheme: CardTheme(
           color: Colors.grey[900],
           elevation: 4,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
       home: const ConfigPage(),
@@ -121,22 +97,11 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
     setState(() {
-      appInBackground = state == AppLifecycleState.paused || 
+      appInBackground = state == AppLifecycleState.paused ||
                         state == AppLifecycleState.inactive;
     });
-    
-    if (state == AppLifecycleState.paused) {
-      // App foi para background - manter conexão
-      _addLog("App em background - mantendo conexões ativas");
-    } else if (state == AppLifecycleState.resumed) {
-      // App voltou ao foreground
-      _addLog("App em foreground");
-    } else if (state == AppLifecycleState.detached) {
-      // App está sendo fechado
-      _addLog("App sendo fechado");
-    }
+    _addLog(appInBackground ? "App em background" : "App em foreground");
   }
 
   void _addLog(String msg) {
@@ -144,8 +109,8 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     setState(() {
       final now = DateTime.now();
       final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-      final backgroundIndicator = appInBackground ? "[BG] " : "";
-      logs.insert(0, "[$timeStr] $backgroundIndicator$msg");
+      final bgTag = appInBackground ? "[BG] " : "";
+      logs.insert(0, "[$timeStr] $bgTag$msg");
       if (logs.length > 100) logs.removeLast();
     });
   }
@@ -187,11 +152,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         
         _initService();
         await service!.connectTraccar();
-        
-        // Solicitar permissão de ignorar otimização de bateria
-        if (!await Geolocator.isLocationServiceEnabled()) {
-          _addLog("GPS desativado. Ative para rastreamento em background.");
-        }
       } catch (e) {
         _addLog("Erro Traccar: $e");
       }
@@ -233,11 +193,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                 ),
                 child: const Text(
                   'BACKGROUND',
-                  style: TextStyle(
-                    color: Colors.amber,
-                    fontSize: 8,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(color: Colors.amber, fontSize: 8, fontWeight: FontWeight.bold),
                 ),
               ),
           ],
@@ -350,43 +306,6 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                     ],
                   ),
                 ],
-                
-                // Info sobre background
-                const SizedBox(height: 20),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blueGrey.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blueGrey.withOpacity(0.3)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.info, color: Colors.blue, size: 16),
-                          SizedBox(width: 8),
-                          Text("MODO BACKGROUND", style: TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        "O aplicativo continuará funcionando em background com notificação permanente.",
-                        style: TextStyle(color: Colors.grey, fontSize: 10),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        appInBackground ? "Status: EM BACKGROUND" : "Status: EM FOREGROUND",
-                        style: TextStyle(
-                          color: appInBackground ? Colors.amber : Colors.green,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             ),
           ),
