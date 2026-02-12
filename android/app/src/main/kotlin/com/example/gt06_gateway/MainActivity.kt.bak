@@ -15,7 +15,8 @@ class MainActivity: FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         // Canal para foreground service
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler { call, result ->
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler {
+            call, result ->
             when (call.method) {
                 "startForegroundService" -> {
                     ForegroundService.startService(this)
@@ -29,8 +30,9 @@ class MainActivity: FlutterActivity() {
             }
         }
 
-        // Canal para navegação (minimizar ao invés de fechar)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NAV_CHANNEL).setMethodCallHandler { call, result ->
+        // Canal para navegação (botão voltar)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NAV_CHANNEL).setMethodCallHandler {
+            call, result ->
             when (call.method) {
                 "moveToBackground" -> {
                     moveTaskToBack(true)
