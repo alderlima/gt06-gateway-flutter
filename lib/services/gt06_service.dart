@@ -10,7 +10,7 @@ class GT06Service {
   UsbPort? _usbPort;
   StreamSubscription<Uint8List>? _usbSubscription;
   StreamSubscription<Position>? _gpsSubscription;
-  
+
   int serial = 1;
   Timer? _heartbeatTimer;
 
@@ -44,7 +44,7 @@ class GT06Service {
     onLog?.call(msg);
   }
 
-  // CRC16 X25
+  // ================= CRC16 X25 =================
   int _crc16(Uint8List data) {
     int crc = 0xFFFF;
     for (int b in data) {
@@ -60,18 +60,19 @@ class GT06Service {
     return crc ^ 0xFFFF;
   }
 
-  // IMEI → BCD
+  // ================= IMEI → BCD =================
   Uint8List _imeiToBcd(String imei) {
     String tempImei = imei;
     if (tempImei.length % 2 != 0) tempImei = "0$tempImei";
     final bytes = Uint8List(tempImei.length ~/ 2);
     for (int i = 0; i < tempImei.length; i += 2) {
-      bytes[i ~/ 2] = ((tempImei.codeUnitAt(i) - 48) << 4) | (tempImei.codeUnitAt(i + 1) - 48);
+      bytes[i ~/ 2] = ((tempImei.codeUnitAt(i) - 48) << 4) |
+          (tempImei.codeUnitAt(i + 1) - 48);
     }
     return bytes;
   }
 
-  // Construtor de pacotes GT06
+  // ================= PACKET BUILDER =================
   Uint8List _buildPacket(int protocol, Uint8List payload) {
     final body = BytesBuilder();
     final length = 1 + payload.length + 2;
@@ -96,7 +97,7 @@ class GT06Service {
     return packet.toBytes();
   }
 
-  // Conexão Traccar
+  // ================= TRACCAR CONNECTION =================
   Future<void> connectTraccar() async {
     try {
       _log("Conectando ao Traccar: $traccarHost:$traccarPort");
@@ -140,11 +141,12 @@ class GT06Service {
     _onTraccarDisconnected();
   }
 
-  // GPS Tracking
+  // ================= GPS TRACKING (GT06 0x22) =================
   Future<void> _startGpsTracking() async {
     try {
       LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
         _log("Permissão de GPS não concedida");
         _gpsPermissionGranted = false;
         return;
@@ -181,95 +183,101 @@ class GT06Service {
     _log("Rastreamento GPS parado");
   }
 
-  // Envio do pacote de localização (protocolo 0x22)
-void _sendLocationPacket(Position pos) {
-  if (!_isTraccarConnected || !_gpsPermissionGranted) return;
+  // ================= ENVIO DO PACOTE DE LOCALIZAÇÃO (0x22) =================
+  void _sendLocationPacket(Position pos) {
+    if (!_isTraccarConnected || !_gpsPermissionGranted) return;
 
-  if (pos.latitude == 0.0 && pos.longitude == 0.0) {
-    _log("Posição inválida (0,0) - ignorando");
-    return;
-  }
-
-  try {
-    final payload = BytesBuilder();
-    final now = DateTime.now().toUtc();
-
-    // Data/Hora (6 bytes)
-    payload.addByte(now.year % 100);
-    payload.addByte(now.month);
-    payload.addByte(now.day);
-    payload.addByte(now.hour);
-    payload.addByte(now.minute);
-    payload.addByte(now.second);
-
-    // GPS Info Length + Satellites
-    payload.addByte(0x0C); // length 12
-    payload.addByte(0x0F); // 15 satélites (exemplo válido)
-
-    // ===============================
-    // CONVERSÃO CORRETA GT06
-    // ===============================
-
-    int latValue = (pos.latitude.abs() * 60 * 30000).toInt();
-    int lonValue = (pos.longitude.abs() * 60 * 30000).toInt();
-
-    payload.addByte((latValue >> 24) & 0xFF);
-    payload.addByte((latValue >> 16) & 0xFF);
-    payload.addByte((latValue >> 8) & 0xFF);
-    payload.addByte(latValue & 0xFF);
-
-    payload.addByte((lonValue >> 24) & 0xFF);
-    payload.addByte((lonValue >> 16) & 0xFF);
-    payload.addByte((lonValue >> 8) & 0xFF);
-    payload.addByte(lonValue & 0xFF);
-
-    // Velocidade
-    int speedKph = (pos.speed * 3.6).round().clamp(0, 255);
-    payload.addByte(speedKph);
-
-    // ===============================
-    // COURSE & STATUS CORRETO
-    // ===============================
-
-    int course = pos.heading.isNaN ? 0 : pos.heading.toInt();
-    course = course & 0x03FF; // 10 bits
-
-    int courseStatus = course;
-
-    // Bit 10 - East(1) / West(0)
-    if (pos.longitude >= 0) {
-      courseStatus |= 0x0400;
+    // --- VALIDAÇÕES RIGOROSAS CONTRA POSIÇÃO INVÁLIDA ---
+    if (pos.latitude == 0.0 && pos.longitude == 0.0) {
+      _log("⚠️ Posição inválida (0,0) – ignorando");
+      return;
     }
 
-    // Bit 11 - North(1) / South(0)
-    if (pos.latitude >= 0) {
-      courseStatus |= 0x0800;
+    if (pos.latitude < -90 || pos.latitude > 90) {
+      _log("❌ Latitude fora do intervalo: ${pos.latitude}");
+      return;
+    }
+    if (pos.longitude < -180 || pos.longitude > 180) {
+      _log("❌ Longitude fora do intervalo: ${pos.longitude}");
+      return;
     }
 
-    // GPS fix valid (bit 12 normalmente ligado)
-    courseStatus |= 0x1000;
+    try {
+      final payload = BytesBuilder();
+      final now = DateTime.now().toUtc();
 
-    payload.addByte((courseStatus >> 8) & 0xFF);
-    payload.addByte(courseStatus & 0xFF);
+      // 1. Data/Hora (6 bytes: YY MM DD HH MM SS)
+      payload.addByte(now.year % 100);
+      payload.addByte(now.month);
+      payload.addByte(now.day);
+      payload.addByte(now.hour);
+      payload.addByte(now.minute);
+      payload.addByte(now.second);
 
-    // Sem LBS (9 bytes zerados)
-    payload.add(Uint8List(9));
+      // 2. Satélites (1 byte) – 0xCC = 12 satélites, comprimento 12
+      payload.addByte(0xCC);
 
-    // ACC, upload mode, real-time
-    payload.addByte(0x01);
-    payload.addByte(0x01);
-    payload.addByte(0x01);
+      // --- CONVERSÃO PRECISA (round em vez de toInt) ---
+      int latInt = (pos.latitude * 1800000).round();
+      int lonInt = (pos.longitude * 1800000).round();
+      int latAbs = latInt.abs();
+      int lonAbs = lonInt.abs();
 
-    final packet = _buildPacket(0x22, payload.toBytes());
-    _traccarSocket?.add(packet);
+      // LOG DETALHADO PARA DEPURAÇÃO
+      _log("📍 POSIÇÃO REAL: ${pos.latitude.toStringAsFixed(6)} "
+          "(${pos.latitude >= 0 ? 'N' : 'S'}), "
+          "${pos.longitude.toStringAsFixed(6)} (${pos.longitude >= 0 ? 'E' : 'W'})");
+      _log("🔢 CONVERTIDO: latInt=$latInt, lonInt=$lonInt");
+      _log("📦 HEX LAT: ${latAbs.toRadixString(16).padLeft(8, '0')}, "
+          "HEX LON: ${lonAbs.toRadixString(16).padLeft(8, '0')}");
 
-    _log("GT06 OK -> LAT ${pos.latitude}, LON ${pos.longitude}");
-  } catch (e) {
-    _log("Erro ao enviar GPS: $e");
+      // 3. Latitude (4 bytes)
+      payload.addByte((latAbs >> 24) & 0xFF);
+      payload.addByte((latAbs >> 16) & 0xFF);
+      payload.addByte((latAbs >> 8) & 0xFF);
+      payload.addByte(latAbs & 0xFF);
+
+      // 4. Longitude (4 bytes)
+      payload.addByte((lonAbs >> 24) & 0xFF);
+      payload.addByte((lonAbs >> 16) & 0xFF);
+      payload.addByte((lonAbs >> 8) & 0xFF);
+      payload.addByte(lonAbs & 0xFF);
+
+      // 5. Velocidade (1 byte) – km/h, clamp entre 0-255
+      int speedKph = (pos.speed * 3.6).round().clamp(0, 255);
+      payload.addByte(speedKph);
+
+      // 6. Curso e Status (2 bytes)
+      int course = (pos.heading % 360).toInt() & 0x3FF; // 0-359, máximo 1023
+      int status = 0xC000; // GPS Online, Normal
+
+      if (pos.latitude >= 0) status |= 0x1000; // Norte
+      if (pos.longitude >= 0) status |= 0x2000; // Leste
+
+      int courseStatus = status | course;
+      payload.addByte((courseStatus >> 8) & 0xFF);
+      payload.addByte(courseStatus & 0xFF);
+
+      // 7. LBS Data (8 bytes MCC/MNC/LAC/CellID + 1 dummy = 9 bytes)
+      payload.add(Uint8List(9));
+
+      // 8. ACC, Upload Mode, Real-time (3 bytes)
+      payload.addByte(0x01); // ACC ON
+      payload.addByte(0x01); // Upload mode
+      payload.addByte(0x01); // Real-time
+
+      final packet = _buildPacket(0x22, payload.toBytes());
+      _traccarSocket?.add(packet);
+
+      _log("📤 Pacote GT06 enviado: LAT ${pos.latitude.toStringAsFixed(6)}, "
+          "LON ${pos.longitude.toStringAsFixed(6)}, SPD $speedKph km/h, "
+          "CRS ${pos.heading.toInt()}°, STATUS: ${status.toRadixString(16)}");
+    } catch (e) {
+      _log("❌ Erro ao enviar pacote GPS: $e");
+    }
   }
-}
 
-  // USB Serial
+  // ================= USB SERIAL =================
   Future<bool> connectUsb() async {
     try {
       List<UsbDevice> devices = await UsbSerial.listDevices();
@@ -293,16 +301,20 @@ void _sendLocationPacket(Position pos) {
 
       await port.setDTR(true);
       await port.setRTS(true);
-      port.setPortParameters(9600, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+      port.setPortParameters(
+          9600, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
 
       _usbPort = port;
-      _usbSubscription = _usbPort!.inputStream!.listen((Uint8List data) {
-        String msg = String.fromCharCodes(data).trim();
-        if (msg.isNotEmpty) _log("Arduino: $msg");
-      }, onError: (e) {
-        _log("Erro leitura USB: $e");
-        disconnectUsb();
-      });
+      _usbSubscription = _usbPort!.inputStream!.listen(
+        (Uint8List data) {
+          String msg = String.fromCharCodes(data).trim();
+          if (msg.isNotEmpty) _log("Arduino: $msg");
+        },
+        onError: (e) {
+          _log("Erro leitura USB: $e");
+          disconnectUsb();
+        },
+      );
 
       _isUsbConnected = true;
       onUsbStatusChanged?.call(true);
@@ -324,7 +336,7 @@ void _sendLocationPacket(Position pos) {
     _log("USB Serial desconectado");
   }
 
-  // Login
+  // ================= PROTOCOL LOGIC =================
   void _sendLogin() {
     try {
       final imeiBytes = _imeiToBcd(imei);
@@ -336,7 +348,6 @@ void _sendLocationPacket(Position pos) {
     }
   }
 
-  // Heartbeat
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(Duration(seconds: heartbeatInterval), (_) {
@@ -352,10 +363,9 @@ void _sendLocationPacket(Position pos) {
     });
   }
 
-  // Processamento de dados recebidos do Traccar
   void _onTraccarData(Uint8List data) {
     if (data.length < 10) return;
-    
+
     int index = 0;
     while (index < data.length - 1) {
       if (data[index] == 0x78 && data[index + 1] == 0x78) {
@@ -366,7 +376,8 @@ void _sendLocationPacket(Position pos) {
         final payloadLength = length - 3;
         if (payloadLength >= 0) {
           final payload = data.sublist(index + 4, index + 4 + payloadLength);
-          final serial = (data[index + 4 + payloadLength] << 8) | data[index + 5 + payloadLength];
+          final serial = (data[index + 4 + payloadLength] << 8) |
+              data[index + 5 + payloadLength];
           _handleResponse(protocol, payload, serial);
         }
         index += totalPacketLength;
@@ -401,7 +412,7 @@ void _sendLocationPacket(Position pos) {
     }
   }
 
-  // Envio de comandos para Arduino via USB
+  // ================= ENVIO PARA ARDUINO =================
   Future<void> sendToArduino(String cmd) async {
     if (_usbPort != null && _isUsbConnected) {
       try {
@@ -416,6 +427,7 @@ void _sendLocationPacket(Position pos) {
     }
   }
 
+  // ================= DISPOSE =================
   void dispose() {
     _log("Dispositivo GT06Service descartado");
     _heartbeatTimer?.cancel();
