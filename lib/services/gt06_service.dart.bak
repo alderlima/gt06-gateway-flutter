@@ -182,92 +182,79 @@ class GT06Service {
   }
 
   // Envio do pacote de localização (protocolo 0x22)
-void _sendLocationPacket(Position pos) {
-  if (!_isTraccarConnected || !_gpsPermissionGranted) return;
+  void _sendLocationPacket(Position pos) {
+    if (!_isTraccarConnected || !_gpsPermissionGranted) return;
 
-  if (pos.latitude == 0.0 && pos.longitude == 0.0) {
-    _log("Posição inválida (0,0) - ignorando");
-    return;
-  }
-
-  try {
-    final payload = BytesBuilder();
-    final now = DateTime.now().toUtc();
-
-    // Data/Hora (6 bytes)
-    payload.addByte(now.year % 100);
-    payload.addByte(now.month);
-    payload.addByte(now.day);
-    payload.addByte(now.hour);
-    payload.addByte(now.minute);
-    payload.addByte(now.second);
-
-    // GPS Info Length + Satellites
-    payload.addByte(0x0C); // length 12
-    payload.addByte(0x0F); // 15 satélites (exemplo válido)
-
-    // ===============================
-    // CONVERSÃO CORRETA GT06
-    // ===============================
-
-    int latValue = (pos.latitude.abs() * 60 * 30000).toInt();
-    int lonValue = (pos.longitude.abs() * 60 * 30000).toInt();
-
-    payload.addByte((latValue >> 24) & 0xFF);
-    payload.addByte((latValue >> 16) & 0xFF);
-    payload.addByte((latValue >> 8) & 0xFF);
-    payload.addByte(latValue & 0xFF);
-
-    payload.addByte((lonValue >> 24) & 0xFF);
-    payload.addByte((lonValue >> 16) & 0xFF);
-    payload.addByte((lonValue >> 8) & 0xFF);
-    payload.addByte(lonValue & 0xFF);
-
-    // Velocidade
-    int speedKph = (pos.speed * 3.6).round().clamp(0, 255);
-    payload.addByte(speedKph);
-
-    // ===============================
-    // COURSE & STATUS CORRETO
-    // ===============================
-
-    int course = pos.heading.isNaN ? 0 : pos.heading.toInt();
-    course = course & 0x03FF; // 10 bits
-
-    int courseStatus = course;
-
-    // Bit 10 - East(1) / West(0)
-    if (pos.longitude >= 0) {
-      courseStatus |= 0x0400;
+    // Validar posição - ignorar se for zero (posição inválida)
+    if (pos.latitude == 0.0 && pos.longitude == 0.0) {
+      _log("Posição inválida (0,0) - ignorando");
+      return;
     }
 
-    // Bit 11 - North(1) / South(0)
-    if (pos.latitude >= 0) {
-      courseStatus |= 0x0800;
+    try {
+      final payload = BytesBuilder();
+      final now = DateTime.now().toUtc();
+
+      // Data/Hora (6 bytes)
+      payload.addByte(now.year % 100);
+      payload.addByte(now.month);
+      payload.addByte(now.day);
+      payload.addByte(now.hour);
+      payload.addByte(now.minute);
+      payload.addByte(now.second);
+
+      // Satélites (1 byte) - 0xCC = 12 satélites, comprimento 12
+      payload.addByte(0xCC);
+
+      // Latitude (4 bytes) - valor absoluto em graus * 60 * 30000
+      int lat = (pos.latitude * 1800000).abs().toInt();
+      payload.addByte((lat >> 24) & 0xFF);
+      payload.addByte((lat >> 16) & 0xFF);
+      payload.addByte((lat >> 8) & 0xFF);
+      payload.addByte(lat & 0xFF);
+
+      // Longitude (4 bytes)
+      int lon = (pos.longitude * 1800000).abs().toInt();
+      payload.addByte((lon >> 24) & 0xFF);
+      payload.addByte((lon >> 16) & 0xFF);
+      payload.addByte((lon >> 8) & 0xFF);
+      payload.addByte(lon & 0xFF);
+
+      // Velocidade (1 byte) - km/h
+      int speedKph = (pos.speed * 3.6).round().clamp(0, 255);
+      payload.addByte(speedKph);
+
+      // Curso e Status (2 bytes)
+      int course = (pos.heading % 360).toInt() & 0x3FF; // 0-359, máximo 1023
+      int status = 0xC000; // GPS Online, Normal
+
+      if (pos.latitude >= 0) status |= 0x1000; // Norte
+      if (pos.longitude >= 0) status |= 0x2000; // Leste
+
+      int courseStatus = status | course;
+      payload.addByte((courseStatus >> 8) & 0xFF);
+      payload.addByte(courseStatus & 0xFF);
+
+      // LBS Data (9 bytes dummy)
+      payload.add(Uint8List(9));
+
+      // ACC, Upload Mode, Real-time
+      payload.addByte(0x01); // ACC ON
+      payload.addByte(0x01); // Upload mode
+      payload.addByte(0x01); // Real-time
+
+      final packet = _buildPacket(0x22, payload.toBytes());
+      _traccarSocket?.add(packet);
+      
+      // Log detalhado para depuração
+      _log("Enviado: LAT ${pos.latitude.toStringAsFixed(6)} (${pos.latitude >= 0 ? 'N' : 'S'}), "
+           "LON ${pos.longitude.toStringAsFixed(6)} (${pos.longitude >= 0 ? 'E' : 'W'}), "
+           "SPD $speedKph km/h, CURSO ${pos.heading.toInt()}°, "
+           "VALORES: latInt=$lat, lonInt=$lon, status=${status.toRadixString(16)}");
+    } catch (e) {
+      _log("Erro ao enviar pacote GPS: $e");
     }
-
-    // GPS fix valid (bit 12 normalmente ligado)
-    courseStatus |= 0x1000;
-
-    payload.addByte((courseStatus >> 8) & 0xFF);
-    payload.addByte(courseStatus & 0xFF);
-
-    // Sem LBS (9 bytes zerados)
-    payload.add(Uint8List(9));
-
-    // ACC, upload mode, real-time
-    payload.addByte(0x01);
-    payload.addByte(0x01);
-    payload.addByte(0x01);
-
-    final packet = _buildPacket(0x22, payload.toBytes());
-    _traccarSocket?.add(packet);
-
-    _log("GT06 OK -> LAT ${pos.latitude}, LON ${pos.longitude}");
-  } catch (e) {
-    _log("Erro ao enviar GPS: $e");
   }
-}
 
   // USB Serial
   Future<bool> connectUsb() async {
