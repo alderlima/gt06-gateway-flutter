@@ -28,6 +28,9 @@ class GT06Service {
   bool _isUsbConnected = false;
   bool _gpsPermissionGranted = false;
 
+  // Estado da ignição (pode ser controlado externamente futuramente)
+  bool _ignition = true; // assumimos ligado durante rastreamento
+
   GT06Service({
     required this.traccarHost,
     required this.traccarPort,
@@ -44,6 +47,7 @@ class GT06Service {
     onLog?.call(msg);
   }
 
+  // ================= CRC16 X25 =================
   int _crc16(Uint8List data) {
     int crc = 0xFFFF;
     for (int b in data) {
@@ -59,6 +63,7 @@ class GT06Service {
     return crc ^ 0xFFFF;
   }
 
+  // ================= IMEI → BCD =================
   Uint8List _imeiToBcd(String imei) {
     String tempImei = imei;
     if (tempImei.length % 2 != 0) tempImei = "0$tempImei";
@@ -70,6 +75,7 @@ class GT06Service {
     return bytes;
   }
 
+  // ================= PACKET BUILDER =================
   Uint8List _buildPacket(int protocol, Uint8List payload) {
     final body = BytesBuilder();
     final length = 1 + payload.length + 2;
@@ -94,6 +100,7 @@ class GT06Service {
     return packet.toBytes();
   }
 
+  // ================= TRACCAR CONNECTION =================
   Future<void> connectTraccar() async {
     try {
       _log("Conectando ao Traccar: $traccarHost:$traccarPort");
@@ -137,6 +144,7 @@ class GT06Service {
     _onTraccarDisconnected();
   }
 
+  // ================= GPS TRACKING (GT06 0x22) =================
   Future<void> _startGpsTracking() async {
     try {
       LocationPermission permission = await Geolocator.checkPermission();
@@ -178,11 +186,11 @@ class GT06Service {
     _log("Rastreamento GPS parado");
   }
 
-  // ================ ENVIO DO PACOTE DE LOCALIZAÇÃO (0x22) ================
+  // ================= ENVIO DO PACOTE DE LOCALIZAÇÃO (0x22) =================
   void _sendLocationPacket(Position pos) {
     if (!_isTraccarConnected || !_gpsPermissionGranted) return;
 
-    // Ignorar posição inválida
+    // --- VALIDAÇÕES RIGOROSAS CONTRA POSIÇÃO INVÁLIDA ---
     if (pos.latitude == 0.0 && pos.longitude == 0.0) {
       _log("⚠️ Posição inválida (0,0) – ignorando");
       return;
@@ -200,7 +208,7 @@ class GT06Service {
       final payload = BytesBuilder();
       final now = DateTime.now().toUtc();
 
-      // Data/Hora (6 bytes)
+      // 1. Data/Hora (6 bytes: YY MM DD HH MM SS)
       payload.addByte(now.year % 100);
       payload.addByte(now.month);
       payload.addByte(now.day);
@@ -208,56 +216,69 @@ class GT06Service {
       payload.addByte(now.minute);
       payload.addByte(now.second);
 
-      // Satélites (1 byte) - 0xCC = 12 satélites, info length = 12
+      // 2. Satélites (1 byte) – 0xCC = 12 satélites, info length = 12
       payload.addByte(0xCC);
 
-      // Converter latitude/longitude para inteiro (graus * 1800000)
+      // --- CONVERSÃO PRECISA (round em vez de toInt) ---
       int latInt = (pos.latitude * 1800000).round();
       int lonInt = (pos.longitude * 1800000).round();
       int latAbs = latInt.abs();
       int lonAbs = lonInt.abs();
 
-      // LOG detalhado
-      _log("📍 POSIÇÃO REAL: ${pos.latitude.toStringAsFixed(6)} (${pos.latitude >= 0 ? 'N' : 'S'}), "
+      // LOG DETALHADO PARA DEPURAÇÃO
+      _log("📍 POSIÇÃO REAL: ${pos.latitude.toStringAsFixed(6)} "
+          "(${pos.latitude >= 0 ? 'N' : 'S'}), "
           "${pos.longitude.toStringAsFixed(6)} (${pos.longitude >= 0 ? 'E' : 'W'})");
       _log("🔢 CONVERTIDO: latInt=$latInt, lonInt=$lonInt");
       _log("📦 HEX LAT: ${latAbs.toRadixString(16).padLeft(8, '0')}, "
           "HEX LON: ${lonAbs.toRadixString(16).padLeft(8, '0')}");
 
-      // Latitude (4 bytes)
+      // 3. Latitude (4 bytes)
       payload.addByte((latAbs >> 24) & 0xFF);
       payload.addByte((latAbs >> 16) & 0xFF);
       payload.addByte((latAbs >> 8) & 0xFF);
       payload.addByte(latAbs & 0xFF);
 
-      // Longitude (4 bytes)
+      // 4. Longitude (4 bytes)
       payload.addByte((lonAbs >> 24) & 0xFF);
       payload.addByte((lonAbs >> 16) & 0xFF);
       payload.addByte((lonAbs >> 8) & 0xFF);
       payload.addByte(lonAbs & 0xFF);
 
-      // Velocidade (1 byte) - km/h
+      // 5. Velocidade (1 byte) – km/h, clamp entre 0-255
       int speedKph = (pos.speed * 3.6).round().clamp(0, 255);
       payload.addByte(speedKph);
 
-      // ========== CORREÇÃO CRÍTICA: BIT DE LONGITUDE INVERTIDO ==========
-      // Status & Course (2 bytes)
-      int course = (pos.heading % 360).toInt() & 0x3FF; // 0-1023
-      int status = 0xC000; // GPS Online, Normal
+      // ================= CORREÇÃO CRÍTICA DOS BITS DE HEMISFÉRIO =================
+      // Conforme Gt06ProtocolDecoder.java:
+      // - bit 10 (0x0400): latitude sign (1 = North, 0 = South)
+      // - bit 11 (0x0800): longitude sign (1 = West, 0 = East)  <-- OESTE = 1
+      // - bit 12 (0x1000): GPS fix valid (1 = válido)
+      // - bit 14 (0x4000): ignition info present
+      // - bit 15 (0x8000): ignition status (se bit14 = 1)
+      // - bits 0-9: course (0-1023)
 
-      if (pos.latitude >= 0) status |= 0x1000; // Norte
-      // Para longitude: Oeste = bit 13 = 1, Leste = bit 13 = 0
-      if (pos.longitude < 0) status |= 0x2000; // Oeste
+      int course = (pos.heading % 360).toInt() & 0x3FF; // 0-359, máximo 1023
 
-      int courseStatus = status | course;
+      int status = 0;
+      status |= 0x1000;                          // GPS válido (bit12)
+      if (pos.latitude >= 0) status |= 0x0400;  // bit10 = 1 (Norte)
+      if (pos.longitude < 0) status |= 0x0800;  // bit11 = 1 (Oeste) – importante!
+      status |= 0x4000;                         // bit14 = 1 (ignition present)
+      if (_ignition) status |= 0x8000;          // bit15 = estado da ignição (1 = ligada)
+
+      status |= course;                         // bits 0-9
+
+      int courseStatus = status;
+      // ========================================================================
+
       payload.addByte((courseStatus >> 8) & 0xFF);
       payload.addByte(courseStatus & 0xFF);
-      // =================================================================
 
-      // LBS Data (9 bytes dummy)
+      // 7. LBS Data (9 bytes dummy)
       payload.add(Uint8List(9));
 
-      // ACC, Upload Mode, Real-time
+      // 8. ACC, Upload Mode, Real-time (3 bytes)
       payload.addByte(0x01); // ACC ON
       payload.addByte(0x01); // Upload mode
       payload.addByte(0x01); // Real-time
@@ -267,13 +288,14 @@ class GT06Service {
 
       _log("📤 Pacote GT06 enviado: LAT ${pos.latitude.toStringAsFixed(6)}, "
           "LON ${pos.longitude.toStringAsFixed(6)}, SPD $speedKph km/h, "
-          "CRS ${pos.heading.toInt()}°, STATUS: ${status.toRadixString(16).padLeft(4, '0')} (bits: ${status.toRadixString(2).padLeft(16, '0')})");
+          "CRS ${pos.heading.toInt()}°, STATUS: ${status.toRadixString(16).padLeft(4, '0')} "
+          "(bits: ${status.toRadixString(2).padLeft(16, '0')})");
     } catch (e) {
       _log("❌ Erro ao enviar pacote GPS: $e");
     }
   }
 
-  // ----------------- USB -----------------
+  // ================= USB SERIAL =================
   Future<bool> connectUsb() async {
     try {
       List<UsbDevice> devices = await UsbSerial.listDevices();
@@ -332,7 +354,7 @@ class GT06Service {
     _log("USB Serial desconectado");
   }
 
-  // ----------------- Protocolo -----------------
+  // ================= PROTOCOL LOGIC =================
   void _sendLogin() {
     try {
       final imeiBytes = _imeiToBcd(imei);
@@ -397,8 +419,10 @@ class GT06Service {
 
     if (text.contains("Relay,1")) {
       await sendToArduino("ENGINE_STOP");
+      _ignition = false; // desliga ignição
     } else if (text.contains("Relay,0")) {
       await sendToArduino("ENGINE_RESUME");
+      _ignition = true; // liga ignição
     }
 
     try {
@@ -408,6 +432,7 @@ class GT06Service {
     }
   }
 
+  // ================= ENVIO PARA ARDUINO =================
   Future<void> sendToArduino(String cmd) async {
     if (_usbPort != null && _isUsbConnected) {
       try {
@@ -422,6 +447,7 @@ class GT06Service {
     }
   }
 
+  // ================= DISPOSE =================
   void dispose() {
     _log("Dispositivo GT06Service descartado");
     _heartbeatTimer?.cancel();

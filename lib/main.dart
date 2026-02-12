@@ -55,6 +55,7 @@ class MyApp extends StatelessWidget {
           seedColor: Colors.cyan,
           brightness: Brightness.dark,
         ),
+        // Mantido CardThemeData conforme solicitado
         cardTheme: CardThemeData(
           color: Colors.grey[900],
           elevation: 4,
@@ -132,6 +133,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     traccarHost.text = p.getString('traccarHost') ?? '66.70.144.235';
     traccarPort.text = (p.getInt('traccarPort') ?? 5023).toString();
     imei.text = p.getString('imei') ?? '357152040915004';
+
     _initService();
     setState(() => loading = false);
   }
@@ -159,6 +161,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         await p.setString('traccarHost', traccarHost.text.trim());
         await p.setInt('traccarPort', int.tryParse(traccarPort.text) ?? 5023);
         await p.setString('imei', imei.text.trim());
+
         _initService();
         await service!.connectTraccar();
       } catch (e) {
@@ -174,12 +177,14 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
       bool success = await service!.connectUsb();
       if (!success) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Falha ao conectar USB. Verifique o cabo OTG.")),
+          const SnackBar(
+              content: Text("Falha ao conectar USB. Verifique o cabo OTG.")),
         );
       }
     }
   }
 
+  // Botão para sair do aplicativo completamente (encerra processo)
   Future<void> _exitApp() async {
     bool? confirm = await showDialog<bool>(
       context: context,
@@ -200,7 +205,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
     );
     if (confirm == true) {
       _addLog("Encerrando aplicativo...");
-      service?.dispose();
+      service?.dispose(); // sem await, método void
       await _stopForegroundService();
       exit(0);
     }
@@ -214,6 +219,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
 
     return WillPopScope(
       onWillPop: () async {
+        // Botão voltar: minimiza o app, não fecha
         _addLog("⬅️ Botão voltar pressionado – movendo para background");
         try {
           await platformNav.invokeMethod('moveToBackground');
@@ -229,11 +235,13 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Text('GT06 TRACKER PRO',
-                  style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, letterSpacing: 1.2)),
               if (appInBackground)
                 Container(
                   margin: const EdgeInsets.only(left: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: Colors.amber.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(4),
@@ -241,7 +249,10 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                   ),
                   child: const Text(
                     'BACKGROUND',
-                    style: TextStyle(color: Colors.amber, fontSize: 8, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                        color: Colors.amber,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold),
                   ),
                 ),
             ],
@@ -263,16 +274,25 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  // Status Section
                   Row(
                     children: [
-                      Expanded(child: _statusTile("SERVIDOR", traccarConnected, Icons.cloud_sync)),
+                      Expanded(
+                          child: _statusTile(
+                              "SERVIDOR", traccarConnected, Icons.cloud_sync)),
                       const SizedBox(width: 12),
-                      Expanded(child: _statusTile("ARDUINO USB", usbConnected, Icons.usb)),
+                      Expanded(
+                          child: _statusTile(
+                              "ARDUINO USB", usbConnected, Icons.usb)),
                       const SizedBox(width: 12),
-                      Expanded(child: _statusTile("GPS", currentPosition != null, Icons.gps_fixed)),
+                      Expanded(
+                          child: _statusTile(
+                              "GPS", currentPosition != null, Icons.gps_fixed)),
                     ],
                   ),
                   const SizedBox(height: 20),
+
+                  // GPS Data Card
                   if (currentPosition != null)
                     Card(
                       color: Colors.cyan.withOpacity(0.05),
@@ -283,16 +303,21 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceAround,
                               children: [
-                                _gpsInfo("LATITUDE", currentPosition!.latitude.toStringAsFixed(6)),
-                                _gpsInfo("LONGITUDE", currentPosition!.longitude.toStringAsFixed(6)),
+                                _gpsInfo("LATITUDE",
+                                    currentPosition!.latitude.toStringAsFixed(6)),
+                                _gpsInfo("LONGITUDE",
+                                    currentPosition!.longitude.toStringAsFixed(6)),
                               ],
                             ),
                             const Divider(height: 24, color: Colors.cyan),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceAround,
                               children: [
-                                _gpsInfo("VELOCIDADE", "${(currentPosition!.speed * 3.6).toStringAsFixed(1)} km/h"),
-                                _gpsInfo("SÉRIE", service?.serial.toString() ?? "0"),
+                                _gpsInfo(
+                                    "VELOCIDADE",
+                                    "${(currentPosition!.speed * 3.6).toStringAsFixed(1)} km/h"),
+                                _gpsInfo("SÉRIE",
+                                    service?.serial.toString() ?? "0"),
                               ],
                             ),
                           ],
@@ -300,6 +325,8 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                       ),
                     ),
                   const SizedBox(height: 12),
+
+                  // Config Card
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
@@ -307,7 +334,9 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text("CONFIGURAÇÃO",
-                              style: TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
+                              style: TextStyle(
+                                  color: Colors.cyan,
+                                  fontWeight: FontWeight.bold)),
                           const SizedBox(height: 12),
                           _inputField("Host Traccar", traccarHost),
                           _inputField("Porta", traccarPort, isNumber: true),
@@ -317,11 +346,15 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 20),
+
+                  // Control Buttons
                   Row(
                     children: [
                       Expanded(
                         child: _actionButton(
-                          traccarConnected ? "PARAR TRACKER" : "INICIAR TRACKER",
+                          traccarConnected
+                              ? "PARAR TRACKER"
+                              : "INICIAR TRACKER",
                           traccarConnected ? Colors.redAccent : Colors.cyan,
                           _toggleTraccar,
                           traccarConnected ? Icons.stop : Icons.play_arrow,
@@ -338,10 +371,14 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                       ),
                     ],
                   ),
+
                   if (usbConnected) ...[
                     const SizedBox(height: 24),
                     const Text("TESTES DE COMANDO (USB 9600)",
-                        style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 12)),
+                        style: TextStyle(
+                            color: Colors.grey,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12)),
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -360,28 +397,39 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                 ],
               ),
             ),
+
+            // Terminal Log
             Container(
               height: 180,
               decoration: BoxDecoration(
                 color: Colors.grey[900],
-                border: Border(top: BorderSide(color: Colors.cyan.withOpacity(0.3), width: 2)),
+                border: Border(
+                    top: BorderSide(
+                        color: Colors.cyan.withOpacity(0.3), width: 2)),
               ),
               child: Column(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     color: Colors.black,
                     child: Row(
                       children: [
                         const Icon(Icons.terminal, color: Colors.cyan, size: 16),
                         const SizedBox(width: 8),
                         const Text("CONSOLE LOGS",
-                            style: TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold)),
+                            style: TextStyle(
+                                color: Colors.cyan,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold)),
                         const Spacer(),
                         Text(
                           appInBackground ? "[BACKGROUND]" : "[FOREGROUND]",
                           style: TextStyle(
-                              color: appInBackground ? Colors.amber : Colors.green, fontSize: 9),
+                              color: appInBackground
+                                  ? Colors.amber
+                                  : Colors.green,
+                              fontSize: 9),
                         ),
                       ],
                     ),
@@ -396,7 +444,9 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
                         child: Text(
                           logs[index],
                           style: const TextStyle(
-                              color: Colors.greenAccent, fontSize: 11, fontFamily: 'monospace'),
+                              color: Colors.greenAccent,
+                              fontSize: 11,
+                              fontFamily: 'monospace'),
                         ),
                       ),
                     ),
@@ -412,8 +462,15 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
 
   Widget _gpsInfo(String label, String value) => Column(
         children: [
-          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
-          Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+          Text(label,
+              style: const TextStyle(
+                  color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace')),
         ],
       );
 
@@ -422,39 +479,54 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         decoration: BoxDecoration(
           color: active ? Colors.cyan.withOpacity(0.1) : Colors.grey[900],
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: active ? Colors.cyan : Colors.grey[800]!),
+          border: Border.all(
+              color: active ? Colors.cyan : Colors.grey[800]!),
         ),
         child: Column(
           children: [
-            Icon(icon, color: active ? Colors.cyan : Colors.grey[600], size: 18),
+            Icon(icon,
+                color: active ? Colors.cyan : Colors.grey[600], size: 18),
             const SizedBox(height: 4),
-            Text(label, style: TextStyle(fontSize: 9, color: active ? Colors.cyan : Colors.grey[600])),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 9,
+                    color: active ? Colors.cyan : Colors.grey[600])),
             Text(active ? "ON" : "OFF",
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
                     color: active ? Colors.greenAccent : Colors.redAccent)),
           ],
         ),
       );
 
-  Widget _inputField(String label, TextEditingController controller, {bool isNumber = false}) => Padding(
+  Widget _inputField(String label, TextEditingController controller,
+          {bool isNumber = false}) =>
+      Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: TextField(
           controller: controller,
-          keyboardType: isNumber ? TextInputType.number : TextInputType.text,
+          keyboardType:
+              isNumber ? TextInputType.number : TextInputType.text,
           decoration: InputDecoration(
             labelText: label,
             labelStyle: const TextStyle(color: Colors.grey, fontSize: 13),
             isDense: true,
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey[800]!)),
-            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.cyan)),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.grey[800]!)),
+            focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.cyan)),
           ),
         ),
       );
 
-  Widget _actionButton(String label, Color color, VoidCallback onPressed, IconData icon) => ElevatedButton.icon(
+  Widget _actionButton(String label, Color color, VoidCallback onPressed,
+          IconData icon) =>
+      ElevatedButton.icon(
         onPressed: onPressed,
         icon: Icon(icon, size: 18),
-        label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+        label: Text(label,
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
         style: ElevatedButton.styleFrom(
           backgroundColor: color.withOpacity(0.15),
           foregroundColor: color,
@@ -464,7 +536,8 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
         ),
       );
 
-  Widget _testButton(String label, Color color, VoidCallback onPressed) => OutlinedButton(
+  Widget _testButton(String label, Color color, VoidCallback onPressed) =>
+      OutlinedButton(
         onPressed: onPressed,
         style: OutlinedButton.styleFrom(
           foregroundColor: color,
@@ -472,6 +545,7 @@ class _ConfigPageState extends State<ConfigPage> with WidgetsBindingObserver {
           padding: const EdgeInsets.symmetric(vertical: 16),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
-        child: Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+        child: Text(label,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
       );
 }
